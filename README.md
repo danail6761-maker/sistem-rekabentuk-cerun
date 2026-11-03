@@ -22,3 +22,8 @@ Jurutera Profesional mesti mengesahkan keputusan sebelum digunakan untuk pembina
 - `tests/benchmark.js`: ujian penanda aras (`node tests/benchmark.js`)
 - `docs/`: draf BRS 20 soalan
 - `python3 build.py`: gabungkan menjadi `Sistem-Rekabentuk-Cerun.html` dan `dist/artifact.html`
+
+## Hos di GitHub Pages
+Repo ini sedia untuk GitHub Pages (`index.html` di akar repo).
+Settings → Pages → Source: *Deploy from a branch* → `main` / `/ (root)` → Save.
+Aplikasi akan tersedia di `https://<pengguna>.github.io/<nama-repo>/`.
