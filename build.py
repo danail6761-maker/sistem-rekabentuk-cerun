@@ -3,8 +3,9 @@
 import pathlib
 d = pathlib.Path(__file__).parent
 app = (d/'src/app.html').read_text(encoding='utf-8')
-eng = (d/'src/engine.js').read_text(encoding='utf-8')
-body = app.replace('/*ENGINE*/', eng)
+eng = (d/'src/engine.js').read_text(encoding='utf-8') + '\n' + (d/'src/wall.js').read_text(encoding='utf-8')
+ui = (d/'src/wall-ui.part.js').read_text(encoding='utf-8')
+body = app.replace('/*ENGINE*/', eng).replace('/*WALL_UI*/', ui)
 (d/'dist').mkdir(exist_ok=True)
 (d/'dist/artifact.html').write_text(body, encoding='utf-8')
 head, rest = body.split('</style>', 1)

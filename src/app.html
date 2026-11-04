@@ -9,6 +9,7 @@
   --accent:#0d5b78; --accent-ink:#ffffff; --accent-soft:#e1eef3; --ochre:#a8661c;
   --ok:#2b7a46; --ok-soft:#e3f2e8; --bad:#b0281f; --bad-soft:#f9e5e3; --warn:#9a6300; --warn-soft:#fbf0dc;
   --water:#2a7fc1; --slip:#c8321f; --nail:#2b7a46; --grid:#e3e9ec;
+  --conc:#b8c0c5; --stone:#a59a88; --fill:#d8c39b; --steel:#1d2a33;
   --f-disp:"Barlow Condensed","Arial Narrow",system-ui,sans-serif;
   --f-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
   --f-mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
@@ -17,12 +18,12 @@
   --bg:#0e1418; --panel:#162027; --sunk:#111a20; --ink:#e3eaee; --muted:#93a2ac; --line:#2a3943;
   --accent:#62b5d6; --accent-ink:#06141b; --accent-soft:#16323e; --ochre:#e0a55c;
   --ok:#6cc58b; --ok-soft:#173226; --bad:#f2877c; --bad-soft:#3a1d1b; --warn:#e8b450; --warn-soft:#3a2c12;
-  --water:#6db4ea; --slip:#ff7a63; --nail:#6cc58b; --grid:#1e2b33; color-scheme:dark}}
+  --water:#6db4ea; --slip:#ff7a63; --nail:#6cc58b; --grid:#1e2b33; --conc:#5b666e; --stone:#7a6f60; --fill:#7d6a4c; --steel:#e3eaee; color-scheme:dark}}
 :root[data-theme="dark"]{
   --bg:#0e1418; --panel:#162027; --sunk:#111a20; --ink:#e3eaee; --muted:#93a2ac; --line:#2a3943;
   --accent:#62b5d6; --accent-ink:#06141b; --accent-soft:#16323e; --ochre:#e0a55c;
   --ok:#6cc58b; --ok-soft:#173226; --bad:#f2877c; --bad-soft:#3a1d1b; --warn:#e8b450; --warn-soft:#3a2c12;
-  --water:#6db4ea; --slip:#ff7a63; --nail:#6cc58b; --grid:#1e2b33; color-scheme:dark}
+  --water:#6db4ea; --slip:#ff7a63; --nail:#6cc58b; --grid:#1e2b33; --conc:#5b666e; --stone:#7a6f60; --fill:#7d6a4c; --steel:#e3eaee; color-scheme:dark}
 *{box-sizing:border-box}
 html,body{background:var(--bg);color:var(--ink)}
 body{font-family:var(--f-body);font-size:14px;line-height:1.45;margin:0}
@@ -103,7 +104,8 @@ aside.fig{position:sticky;top:calc(env(safe-area-inset-top,0px) + 70px);display:
 .note{background:var(--warn-soft);color:var(--ink);border-radius:8px;padding:10px 12px;font-size:13px;margin-top:12px}
 .note b{color:var(--warn)}
 details{margin-top:12px} summary{cursor:pointer;font-weight:600;font-size:13px;color:var(--accent)}
-#nailRes td,#anaRes td,#ewRes td{white-space:nowrap}
+#nailRes td,#anaRes td,#ewRes td,#wallRes td{white-space:nowrap}
+[hidden]{display:none!important}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(16px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:9px 14px;border-radius:8px;font-size:13px;z-index:20}
 .busy{font-size:12px;color:var(--muted);font-family:var(--f-mono)}
 /* Laporan */
@@ -152,8 +154,8 @@ details{margin-top:12px} summary{cursor:pointer;font-weight:600;font-size:13px;c
   <main class="panel" id="panel"></main>
   <aside class="fig" id="aside">
     <div class="card">
-      <div class="hd"><b>Keratan rentas</b>
-        <div class="sp">
+      <div class="hd"><b id="figTitle">Keratan rentas</b>
+        <div class="sp" id="figOpts">
           <label class="check"><input type="checkbox" id="optSlices" checked> Hirisan</label>
           <label class="check"><input type="checkbox" id="optTop"> 10 bulatan terendah</label>
           <label class="check"><input type="checkbox" id="optGrid"> Grid pusat</label>
@@ -174,7 +176,8 @@ details{margin-top:12px} summary{cursor:pointer;font-weight:600;font-size:13px;c
 <script>
 (function(){
 'use strict';
-const E = window.SlopeEngine;
+const E = window.SlopeEngine, WE = window.WallEngine;
+let RW = null; // keputusan tembok
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const f = (v, d=2) => (v==null || !isFinite(v)) ? '—' : (+v).toFixed(d);
@@ -204,6 +207,18 @@ function sample(){
     criteria:{ life:'high', econ:'low', seismic:1.1,
       table:{ life:{negligible:1.1, low:1.2, high:1.4}, econ:{negligible:1.1, low:1.2, high:1.4} } },
     rules:{ maxBench:6, minBerm:2, minN:1.5 },
+    wall:{ type:'rc', include:true, length:50,
+      gravity:{ H:3, Bbase:2.1, Btop:0.6, nf:0.15, gamma:24, sAllow:3000, phiJoint:35 },
+      rubble:{ H:2.5, Bbase:1.8, Btop:0.5, nf:0.15, gamma:22, sAllow:700, phiJoint:35 },
+      crib:{ H:4, Bbase:1.8, Btop:1.8, nf:0.25, gamma:18, sAllow:500, phiJoint:35 },
+      gabion:{ tilt:6, gammaRock:25, porosity:0.3, phiInt:35, layers:[{w:2.5,h:1},{w:2,h:1},{w:1.5,h:1},{w:1,h:1}] },
+      rc:{ H:4, tb:0.4, tTop:0.25, tBot:0.4, toe:0.8, heel:1.8, gammaC:25, fck:30, fyk:500, cover:50, barStem:16, barBase:16, gF:1.4 },
+      mse:{ H:6, L:4.5, Sv:0.5, Tallow:25, Ci:0.8, phiR:34, gammaR:19, krFactor:1 },
+      sheet:{ H:3, Fp:1.5, extend:1.2, fy:355, Zprov:1000 },
+      backfill:{ gamma:19, gammaSat:20, phi:30, beta:0, deltaRatio:0.67 },
+      found:{ gamma:19, phi:30, c:5, D:0.6, method:'calc', qa:200, deltaRatio:1.0, cBase:0 },
+      water:{ hw:0, hwf:0 }, loads:{ q:10, kh:0 }, passive:{ on:false, factor:0.5 },
+      fos:{ sl:1.5, ot:2.0, br:3.0, sSl:1.1, sOt:1.5, sBr:2.0, eRock:false } },
   };
 }
 function blank(){
@@ -222,7 +237,7 @@ const VIEW = { slices:true, top:false, grid:false, rein:true };
 const MODS = [
   ['projek','Maklumat projek'], ['geometri','Geometri cerun'], ['tanah','Lapisan tanah'], ['air','Air bumi & beban'],
   ['analisis','Analisis bulatan'], ['paku','Paku tanah'], ['tak-terhingga','Cerun tak terhingga'], ['kerja-tanah','Kerja tanah & kuantiti'],
-  ['kriteria','Kriteria JKR'], ['laporan','Laporan'],
+  ['tembok','Tembok penahan'], ['kriteria','Kriteria JKR'], ['laporan','Laporan'],
 ];
 let cur = (location.hash || '').slice(1);
 if (!MODS.some(m => m[0] === cur)) cur = 'projek';
@@ -232,6 +247,7 @@ function navStatus(id){
   if (id === 'analisis') { const b = R.unrein.best[R.primary]; return !b ? 'warn' : b.FS[R.primary] >= reqFS() ? 'ok' : 'bad'; }
   if (id === 'paku') { if (!P.nails.enabled) return ''; const b = R.rein && R.rein.best[R.primary]; return !b ? 'warn' : b.FS[R.primary] >= reqFS() ? 'ok' : 'bad'; }
   if (id === 'tak-terhingga') return R.inf.FS >= +P.infinite.target ? 'ok' : 'bad';
+  if (id === 'tembok') return !RW ? 'warn' : wallStatus().every(c => c.ok) ? 'ok' : 'bad';
   if (id === 'geometri') return R.geo.every(g => g.ok) ? 'ok' : 'warn';
   return '';
 }
@@ -410,6 +426,53 @@ paku: () => `
   <h3>Kuantiti</h3>
   <div id="ewRes"></div>`,
 
+tembok: () => { const w = P.wall, T = w.type; return `
+  <h2>Tembok penahan</h2>
+  <p class="lede">Rekabentuk per meter panjang. Tekanan tanah dikira dengan kaedah baji cuba-jaya Coulomb (sah untuk muka condong, timbus bercerun dan seismik Mononobe–Okabe), diikuti kestabilan luaran, semakan dalaman dan rekabentuk struktur.</p>
+  <div class="fields">
+    ${fld('wall.type','Jenis tembok','',{type:'select',options:Object.entries(WTYPES).map(([k,v])=>[k,v.name])})}
+    ${fld('wall.length','Panjang tembok (untuk kuantiti)','m')}
+  </div>
+  <p class="hint">${WTYPES[T].desc}</p>
+  <div style="margin-top:10px">${fld('wall.include','Sertakan tembok dalam laporan','',{type:'check'})}</div>
+  <h3>Geometri & bahan</h3>
+  ${wallGeomFields(T)}
+  <h3>Tanah timbus (di belakang tembok)</h3>
+  <div class="fields">
+    ${fld('wall.backfill.gamma','γ','kN/m³')}
+    ${T!=='sheet'?fld('wall.backfill.gammaSat','γsat','kN/m³'):''}
+    ${fld('wall.backfill.phi','φ′','°')}
+    ${T!=='sheet'?fld('wall.backfill.beta','Cerun timbus β','°')+fld('wall.backfill.deltaRatio','Geseran dinding δ/φ′',''):''}
+  </div>
+  ${T==='sheet'?'<p class="hint">Tanah yang sama dianggap di kedua-dua belah cerucuk (tanah berbutir, c′ = 0, tiada air).</p>':`
+  <p class="hint">${T==='rc'||T==='mse'?'Tekanan dikira pada satah maya tegak di hujung tumit/blok, dengan δ = β (Rankine).':'δ/φ′ lazim: 0.67 untuk konkrit/batu, 0.67–1.0 untuk gabion.'} Tanah timbus berbutir yang bersalir disyorkan.</p>
+  <h3>Tanah asas</h3>
+  <div class="fields">
+    ${fld('wall.found.gamma','γ','kN/m³')}${fld('wall.found.phi','φ′','°')}${fld('wall.found.c','c′','kPa')}
+    ${fld('wall.found.D','Kedalaman tertanam D','m')}
+    ${fld('wall.found.method','Semakan galas','',{type:'select',options:[['calc','Kira keupayaan galas (EC7)'],['qa','Guna tekanan galas dibenarkan qa']]})}
+    ${fld('wall.found.qa','qa','kPa')}
+    ${fld('wall.found.deltaRatio','Geseran tapak δb/φ′','')}${fld('wall.found.cBase','Lekatan tapak cb','kPa')}
+  </div>
+  <p class="hint">δb/φ′ = 1.0 untuk konkrit tuang di tapak; 0.67 untuk unit pratuang yang licin.</p>
+  <h3>Air bumi</h3>
+  <div class="fields">${fld('wall.water.hw','Aras air di belakang (dari dasar)','m')}${fld('wall.water.hwf','Aras air di hadapan (dari dasar)','m')}</div>
+  <p class="hint">Jika lubang salir (weep hole) dan saliran belakang berfungsi, hw boleh diambil 0. Semak juga keadaan saliran tersumbat.</p>
+  <h3>Rintangan pasif</h3>
+  <div class="fields">${fld('wall.passive.on','Ambil kira tekanan pasif di hadapan','',{type:'check'})}${fld('wall.passive.factor','Faktor pengurangan Pp','')}</div>`}
+  <h3>Beban</h3>
+  <div class="fields">${fld('wall.loads.q','Surcaj q','kPa')}${T!=='sheet'?fld('wall.loads.kh','Pekali seismik kh',''):''}</div>
+  ${T!=='sheet'?`<h3>Faktor keselamatan minimum</h3>
+  <div class="tblwrap"><table class="edit"><thead><tr><th>Semakan</th><th class="num">Statik</th><th class="num">Seismik</th></tr></thead><tbody>
+    <tr><td>Gelongsor</td><td>${cell('wall.fos.sl')}</td><td>${cell('wall.fos.sSl')}</td></tr>
+    <tr><td>Terbalik</td><td>${cell('wall.fos.ot')}</td><td>${cell('wall.fos.sOt')}</td></tr>
+    <tr><td>Keupayaan galas</td><td>${cell('wall.fos.br')}</td><td>${cell('wall.fos.sBr')}</td></tr>
+  </tbody></table></div>
+  <div style="margin-top:10px">${fld('wall.fos.eRock','Tapak di atas batuan (had kesipian B/4)','',{type:'check'})}</div>
+  <p class="hint">Nilai lalai 1.5 / 2.0 / 3.0 ialah amalan lazim (BS 8002, garis panduan JKR). Sahkan dengan spesifikasi projek.</p>`:''}
+  <h3>Keputusan</h3>
+  <div id="wallRes"></div>`; },
+
 kriteria: () => `
   <h2>Kriteria JKR</h2>
   <p class="lede">FOS minimum ditentukan oleh kategori risiko kepada nyawa dan risiko ekonomi; nilai yang lebih tinggi digunakan. Jadual boleh diubah mengikut garis panduan yang berkuat kuasa untuk projek.</p>
@@ -443,6 +506,7 @@ let timer = null;
 function schedule(){ clearTimeout(timer); timer = setTimeout(compute, 250); }
 function compute(){
   try { R = E.runAll(P); } catch(e){ console.error(e); R = null; }
+  try { RW = WE.runWall(P.wall); } catch(e){ console.error(e); RW = null; }
   try { localStorage.setItem(STORE, JSON.stringify(P)); } catch(e){}
   renderNav();
   updateOutputs();
@@ -573,7 +637,12 @@ function summaryHTML(){
 /* ---------- Kemas kini paparan output ---------- */
 function updateOutputs(){
   const lbl = $('#projLabel'); if (lbl) lbl.textContent = P.info.name || '';
-  if (cur !== 'laporan' && cur !== 'tak-terhingga') {
+  const wr = document.getElementById('wallRes'); if (wr) wr.innerHTML = wallResHTML();
+  if (cur === 'tembok') {
+    $('#figTitle').textContent = 'Keratan tembok'; $('#figOpts').hidden = true;
+    $('#fig').innerHTML = drawWall(); $('#legend').innerHTML = wallLegend(); $('#summary').innerHTML = wallSummaryHTML();
+  } else if (cur !== 'laporan' && cur !== 'tak-terhingga') {
+    $('#figTitle').textContent = 'Keratan rentas'; $('#figOpts').hidden = false;
     $('#fig').innerHTML = drawSection();
     $('#legend').innerHTML = legendHTML();
     $('#summary').innerHTML = summaryHTML();
@@ -709,11 +778,13 @@ function reportHTML(){
     <p>β = ${f(P.infinite.beta,1)}°, z = ${f(P.infinite.z,2)} m, c′ = ${f(P.infinite.c,1)} kPa, φ′ = ${f(P.infinite.phi,1)}°, m = ${f(P.infinite.m,2)} → <b>FOS = ${f(R.inf.FS,3)}</b> ${pass(R.inf.FS, +P.infinite.target)} (sasaran ${f(P.infinite.target,2)}).</p>
     <h4>${R.rein?'8':'7'}. Kuantiti anggaran</h4>
     ${ewHTML()}
+    ${P.wall.include && RW ? wallReportHTML() : ''}
     <h4>Kenyataan</h4>
     <p class="mini">Analisis keseimbangan had 2D untuk permukaan gelinciran bulatan. Keputusan bergantung pada ketepatan parameter tanah dan paras air bumi. Rekabentuk ini mesti disemak dan disahkan oleh Jurutera Profesional berdaftar dengan BEM sebelum digunakan untuk pembinaan. Permukaan bukan bulatan, kegagalan baji batuan dan aliran rembesan terperinci memerlukan analisis berasingan.</p>
     <div class="sig"><div>Disediakan oleh<br><b style="color:var(--ink)">${esc(I.engineer)}</b></div><div>Disemak oleh<br><b style="color:var(--ink)">${esc(I.checker)}</b></div><div>Diluluskan oleh</div></div>`;
 }
 
+/*WALL_UI*/
 /* ---------- Peristiwa ---------- */
 document.addEventListener('input', e => {
   const k = e.target.dataset && e.target.dataset.k; if (!k) return;
@@ -727,6 +798,7 @@ document.addEventListener('input', e => {
 document.addEventListener('change', e => {
   const k = e.target.dataset && e.target.dataset.k;
   if (k && (k === 'nails.enabled' || k === 'water.mode')) schedule();
+  if (k === 'wall.type') { clearTimeout(timer); compute(); renderPanel(); }
 });
 document.addEventListener('click', e => {
   const t = e.target.closest('button,a'); if (!t) return;
@@ -741,6 +813,7 @@ document.addEventListener('click', e => {
     if (a === 'bench') { const L = P.geom.benches; const last = L[L.length-1]; if (L.length) L[L.length-1].berm = L[L.length-1].berm || +P.rules.minBerm; L.push({h:last?last.h:6, n:last?last.n:1.5, berm:0}); }
     if (a === 'soil') { const L = P.soils; const lb = L.length>1 ? +L[L.length-2].bottom : 5; L.splice(L.length-1, 0, {name:'Lapisan baharu', gamma:19, gammaSat:20, c:5, phi:30, bottom: lb - 3, color:'#b8946a', rock:false}); }
     if (a === 'wpt') { const L = P.water.points; const l = L[L.length-1]; L.push([l?+l[0]+5:0, l?+l[1]:0]); }
+    if (a === 'glayer') { const L = P.wall.gabion.layers; const l = L[L.length-1]; L.push({w: Math.max(1, +l.w - 0.5), h: 1}); }
     if (a === 'ept') { const L = P.earth.existing; const l = L[L.length-1]; L.push([l?+l[0]+5:0, l?+l[1]:0]); }
     renderPanel(); schedule(); return;
   }

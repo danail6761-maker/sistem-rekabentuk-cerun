@@ -14,6 +14,7 @@
   --accent:#0d5b78; --accent-ink:#ffffff; --accent-soft:#e1eef3; --ochre:#a8661c;
   --ok:#2b7a46; --ok-soft:#e3f2e8; --bad:#b0281f; --bad-soft:#f9e5e3; --warn:#9a6300; --warn-soft:#fbf0dc;
   --water:#2a7fc1; --slip:#c8321f; --nail:#2b7a46; --grid:#e3e9ec;
+  --conc:#b8c0c5; --stone:#a59a88; --fill:#d8c39b; --steel:#1d2a33;
   --f-disp:"Barlow Condensed","Arial Narrow",system-ui,sans-serif;
   --f-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
   --f-mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
@@ -22,12 +23,12 @@
   --bg:#0e1418; --panel:#162027; --sunk:#111a20; --ink:#e3eaee; --muted:#93a2ac; --line:#2a3943;
   --accent:#62b5d6; --accent-ink:#06141b; --accent-soft:#16323e; --ochre:#e0a55c;
   --ok:#6cc58b; --ok-soft:#173226; --bad:#f2877c; --bad-soft:#3a1d1b; --warn:#e8b450; --warn-soft:#3a2c12;
-  --water:#6db4ea; --slip:#ff7a63; --nail:#6cc58b; --grid:#1e2b33; color-scheme:dark}}
+  --water:#6db4ea; --slip:#ff7a63; --nail:#6cc58b; --grid:#1e2b33; --conc:#5b666e; --stone:#7a6f60; --fill:#7d6a4c; --steel:#e3eaee; color-scheme:dark}}
 :root[data-theme="dark"]{
   --bg:#0e1418; --panel:#162027; --sunk:#111a20; --ink:#e3eaee; --muted:#93a2ac; --line:#2a3943;
   --accent:#62b5d6; --accent-ink:#06141b; --accent-soft:#16323e; --ochre:#e0a55c;
   --ok:#6cc58b; --ok-soft:#173226; --bad:#f2877c; --bad-soft:#3a1d1b; --warn:#e8b450; --warn-soft:#3a2c12;
-  --water:#6db4ea; --slip:#ff7a63; --nail:#6cc58b; --grid:#1e2b33; color-scheme:dark}
+  --water:#6db4ea; --slip:#ff7a63; --nail:#6cc58b; --grid:#1e2b33; --conc:#5b666e; --stone:#7a6f60; --fill:#7d6a4c; --steel:#e3eaee; color-scheme:dark}
 *{box-sizing:border-box}
 html,body{background:var(--bg);color:var(--ink)}
 body{font-family:var(--f-body);font-size:14px;line-height:1.45;margin:0}
@@ -108,7 +109,8 @@ aside.fig{position:sticky;top:calc(env(safe-area-inset-top,0px) + 70px);display:
 .note{background:var(--warn-soft);color:var(--ink);border-radius:8px;padding:10px 12px;font-size:13px;margin-top:12px}
 .note b{color:var(--warn)}
 details{margin-top:12px} summary{cursor:pointer;font-weight:600;font-size:13px;color:var(--accent)}
-#nailRes td,#anaRes td,#ewRes td{white-space:nowrap}
+#nailRes td,#anaRes td,#ewRes td,#wallRes td{white-space:nowrap}
+[hidden]{display:none!important}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(16px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:9px 14px;border-radius:8px;font-size:13px;z-index:20}
 .busy{font-size:12px;color:var(--muted);font-family:var(--f-mono)}
 /* Laporan */
@@ -160,8 +162,8 @@ details{margin-top:12px} summary{cursor:pointer;font-weight:600;font-size:13px;c
   <main class="panel" id="panel"></main>
   <aside class="fig" id="aside">
     <div class="card">
-      <div class="hd"><b>Keratan rentas</b>
-        <div class="sp">
+      <div class="hd"><b id="figTitle">Keratan rentas</b>
+        <div class="sp" id="figOpts">
           <label class="check"><input type="checkbox" id="optSlices" checked> Hirisan</label>
           <label class="check"><input type="checkbox" id="optTop"> 10 bulatan terendah</label>
           <label class="check"><input type="checkbox" id="optGrid"> Grid pusat</label>
@@ -614,11 +616,404 @@ details{margin-top:12px} summary{cursor:pointer;font-weight:600;font-size:13px;c
   else root.SlopeEngine = API;
 })(this);
 
+/* =====================================================================
+   ENJIN REKABENTUK TEMBOK PENAHAN
+   Unit: m, kN, kPa, darjah (input), per meter panjang tembok.
+   Koordinat: kaki (toe) tembok di (0,0); tanah ditahan di sebelah kanan (+x);
+   y ke atas. Momen lawan jam (CCW) positif = momen menterbalikkan.
+   ===================================================================== */
+(function (root) {
+  'use strict';
+  const D2R = Math.PI / 180;
+  const R2D = 180 / Math.PI;
+
+  /* ---------------- Geometri asas ---------------- */
+  function rotCW(p, a) { // putar ikut jam sekitar asalan (tembok condong ke belakang)
+    const c = Math.cos(a), s = Math.sin(a);
+    return [p[0] * c + p[1] * s, -p[0] * s + p[1] * c];
+  }
+  function polyProps(pts) {
+    let A = 0, cx = 0, cy = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const [x1, y1] = pts[i], [x2, y2] = pts[(i + 1) % pts.length];
+      const cr = x1 * y2 - x2 * y1;
+      A += cr; cx += (x1 + x2) * cr; cy += (y1 + y2) * cr;
+    }
+    A /= 2;
+    if (Math.abs(A) < 1e-12) return { A: 0, cx: 0, cy: 0 };
+    return { A: Math.abs(A), cx: cx / (6 * A), cy: cy / (6 * A) };
+  }
+
+  /* ---------------- Pekali tekanan tanah ---------------- */
+  // Kaedah baji cuba-jaya Coulomb (aktif), muka belakang condong ω dari tegak
+  // (+ = atas muka condong ke arah tanah), geseran dinding δ, cerun timbus β,
+  // pekali seismik mendatar kh. Pulangkan K berdasarkan tinggi tegak muka.
+  function wedgeK(phiDeg, deltaDeg, omegaDeg, betaDeg, kh) {
+    const phi = phiDeg * D2R, d = deltaDeg * D2R, w = omegaDeg * D2R, b = betaDeg * D2R;
+    kh = kh || 0;
+    const A = [0, 0], B = [Math.tan(w), 1];
+    const lo = Math.max(phiDeg, betaDeg) + 0.01, hi = Math.min(90 - omegaDeg, 179) - 0.01;
+    if (hi <= lo) return NaN;
+    const P = rhoDeg => {
+      const r = rhoDeg * D2R;
+      // persilangan satah gagal dari A dengan permukaan tanah dari B
+      const a11 = Math.cos(r), a12 = -Math.cos(b), a21 = Math.sin(r), a22 = -Math.sin(b);
+      const det = a11 * a22 - a12 * a21;
+      if (Math.abs(det) < 1e-12) return -Infinity;
+      const s = ((B[0] - A[0]) * a22 - a12 * (B[1] - A[1])) / det;
+      if (s <= 0) return -Infinity;
+      const C = [s * Math.cos(r), s * Math.sin(r)];
+      const W = polyProps([A, B, C]).A; // γ = 1
+      const x = r - phi;
+      const den = Math.cos(x - (d - w));
+      if (den <= 1e-9) return -Infinity;
+      return W * (kh * Math.cos(x) + Math.sin(x)) / den;
+    };
+    let best = -Infinity, bestR = lo;
+    for (let r = lo; r <= hi; r += 0.1) { const v = P(r); if (v > best) { best = v; bestR = r; } }
+    let a = Math.max(lo, bestR - 0.1), c = Math.min(hi, bestR + 0.1);
+    for (let k = 0; k < 60; k++) { // carian keratan emas
+      const m1 = a + (c - a) * 0.382, m2 = a + (c - a) * 0.618;
+      if (P(m1) > P(m2)) c = m2; else a = m1;
+    }
+    const v = P((a + c) / 2);
+    if (!isFinite(v) || v <= 0) return NaN;
+    return { K: 2 * Math.max(v, best), rho: (a + c) / 2 };
+  }
+  const rankineKa = phi => (1 - Math.sin(phi * D2R)) / (1 + Math.sin(phi * D2R));
+  const rankineKp = phi => (1 + Math.sin(phi * D2R)) / (1 - Math.sin(phi * D2R));
+  // Bentuk tertutup Coulomb (untuk semakan)
+  function coulombKa(phi, delta, omega, beta) {
+    const f = phi * D2R, d = delta * D2R, t = -omega * D2R, b = beta * D2R; // t: sudut muka dari tegak (Das)
+    const num = Math.cos(f - t) ** 2;
+    const s = Math.sqrt(Math.sin(f + d) * Math.sin(f - b) / (Math.cos(d + t) * Math.cos(t - b)));
+    return num / (Math.cos(t) ** 2 * Math.cos(d + t) * (1 + s) ** 2);
+  }
+
+  /* Taburan tekanan pada muka (tinggi tegak dari yA ke yB) */
+  function faceThrust(K, yA, yB, omega, soil, yW, q, gw) {
+    const Hf = yB - yA, N = 200, dz = Hf / N;
+    let Ps = 0, Ms = 0, Pq = 0, Mq = 0, Pw = 0, Mw = 0;
+    const prof = [];
+    for (let i = 0; i < N; i++) {
+      const z = (i + 0.5) * dz, y = yB - z;
+      const zw = Math.max(0, yB - yW); // kedalaman aras air dari atas muka
+      const sv = soil.gamma * Math.min(z, zw) + (soil.gammaSat - gw) * Math.max(0, z - zw);
+      const u = y < yW ? gw * (yW - y) : 0;
+      const ss = K * sv, sq = K * q;
+      Ps += ss * dz; Ms += ss * dz * y; Pq += sq * dz; Mq += sq * dz * y; Pw += u * dz; Mw += u * dz * y;
+      if (i % 10 === 0 || i === N - 1) prof.push({ y, s: ss + sq, u });
+    }
+    return { Ps, ys: Ps ? Ms / Ps : yA + Hf / 3, Pq, yq: Pq ? Mq / Pq : yA + Hf / 2, Pw, yw: Pw ? Mw / Pw : yA, prof, Hf };
+  }
+
+  /* ---------------- Geometri setiap jenis tembok ---------------- */
+  // Setiap pembina pulangkan:
+  // polys: [{pts, gamma, kind:'wall'|'soil', name}], face:{A,B} (muka tekanan), omega (darjah),
+  // delta (darjah), base:{heel:[x,y]} (kaki di 0,0), extra
+  function geomTrap(t, H) { // graviti / batu-batan / crib
+    const Bb = +t.Bbase, Bt = +t.Btop, nf = +t.nf;
+    const pts = [[0, 0], [Bb, 0], [nf * H + Bt, H], [nf * H, H]];
+    return { pts, Bb, Bt, nf, H, backTop: [nf * H + Bt, H] };
+  }
+  function buildWall(w) {
+    const T = w.type, bf = w.backfill;
+    const dRatio = +bf.deltaRatio;
+    if (T === 'gravity' || T === 'rubble' || T === 'crib') {
+      const t = w[T], H = +t.H;
+      const g = geomTrap(t, H);
+      const omega = Math.atan((g.backTop[0] - g.Bb) / H) * R2D;
+      return { type: T, H, polys: [{ pts: g.pts, gamma: +t.gamma, kind: 'wall', name: 'Badan tembok' }],
+        face: { A: [g.Bb, 0], B: g.backTop }, omega, delta: dRatio * bf.phi, heel: [g.Bb, 0], trap: g };
+    }
+    if (T === 'gabion') {
+      const t = w.gabion, a = (+t.tilt || 0) * D2R;
+      const L = t.layers.map(l => ({ w: +l.w, h: +l.h }));
+      const w0 = L[0].w, gam = (+t.gammaRock) * (1 - (+t.porosity));
+      let y = 0; const polys = [];
+      L.forEach((l, i) => {
+        const x0 = w0 - l.w;
+        const pts = [[x0, y], [w0, y], [w0, y + l.h], [x0, y + l.h]].map(p => rotCW(p, a));
+        polys.push({ pts, gamma: gam, kind: 'wall', name: `Lapis gabion ${i + 1}` , layer: i });
+        y += l.h;
+      });
+      const H = y;
+      const A = rotCW([w0, 0], a), B = rotCW([w0, H], a);
+      return { type: T, H, polys, face: { A, B }, omega: (+t.tilt || 0), delta: dRatio * bf.phi, heel: A, tilt: a, gam, layers: L, w0 };
+    }
+    if (T === 'rc') {
+      const t = w.rc, H = +t.H, tb = +t.tb, toe = +t.toe, heel = +t.heel, tt = +t.tTop, tbo = +t.tBot;
+      const B = toe + tbo + heel, beta = bf.beta * D2R;
+      const xsb = toe + tbo, xst = toe + tt; // belakang batang di bawah / atas
+      const yTopSoil = H + (B - xst) * Math.tan(beta);
+      const polys = [
+        { pts: [[0, 0], [B, 0], [B, tb], [0, tb]], gamma: +t.gammaC, kind: 'wall', name: 'Tapak (base)' },
+        { pts: [[toe, tb], [xsb, tb], [xst, H], [toe, H]], gamma: +t.gammaC, kind: 'wall', name: 'Batang (stem)' },
+        { pts: [[xsb, tb], [B, tb], [B, yTopSoil], [xst, H]], gamma: +bf.gamma, kind: 'soil', name: 'Tanah atas tumit' },
+      ];
+      return { type: T, H, polys, face: { A: [B, 0], B: [B, yTopSoil] }, omega: 0, delta: bf.beta, heel: [B, 0], B, tb, toe, heelL: heel, tt, tbo, xsb, xst };
+    }
+    if (T === 'mse') {
+      const t = w.mse, H = +t.H, L = +t.L, beta = bf.beta * D2R;
+      const yTop = H + L * Math.tan(beta);
+      const polys = [{ pts: [[0, 0], [L, 0], [L, yTop], [0, H]], gamma: +t.gammaR, kind: 'wall', name: 'Blok tanah bertetulang' }];
+      return { type: T, H, polys, face: { A: [L, 0], B: [L, yTop] }, omega: 0, delta: bf.beta, heel: [L, 0], L };
+    }
+    return null;
+  }
+
+  /* ---------------- Kestabilan luaran ---------------- */
+  function bearingEC7(phiDeg, c, gamma, q0, Bp, V, Hh) {
+    const f = phiDeg * D2R;
+    const Nq = f > 0 ? Math.exp(Math.PI * Math.tan(f)) * Math.tan(Math.PI / 4 + f / 2) ** 2 : 1;
+    const Nc = f > 0 ? (Nq - 1) / Math.tan(f) : Math.PI + 2;
+    const Ng = 2 * (Nq - 1) * Math.tan(f);
+    const m = 2; // jalur
+    const denom = V + Bp * c * (f > 0 ? 1 / Math.tan(f) : 0);
+    const r = denom > 0 ? Math.max(0, 1 - Hh / denom) : 0;
+    const iq = r ** m, ig = r ** (m + 1);
+    const ic = f > 0 ? iq - (1 - iq) / (Nc * Math.tan(f)) : 1 - m * Hh / (Bp * c * Nc || 1);
+    const qult = c * Nc * Math.max(ic, 0) + q0 * Nq * iq + 0.5 * gamma * Bp * Ng * ig;
+    return { Nq, Nc, Ng, iq, ig, ic, qult };
+  }
+
+  function checkWall(g, w, opt) {
+    opt = opt || {};
+    const bf = w.backfill, fd = w.found, gw = 9.81;
+    const kh = opt.kh != null ? opt.kh : (+w.loads.kh || 0);
+    const q = opt.q != null ? opt.q : (+w.loads.q || 0);
+    const heel = g.heel, Bx = heel[0], By = heel[1];
+    const Bw = Math.hypot(Bx, By), alpha = Math.atan2(-By, Bx); // sudut tapak (tumit lebih rendah = +)
+    const tx = Math.cos(alpha), ty = -Math.sin(alpha), nx = Math.sin(alpha), ny = Math.cos(alpha);
+    const items = []; // {name, Fx, Fy, x, y, M}
+    // momen dipecah kepada komponen mendatar (-y·Fx) dan tegak (x·Fy) supaya Ph·y dan Pv·x dikelaskan berasingan
+    const add = (name, Fx, Fy, x, y, cat) => items.push({ name, Fx, Fy, x, y, M: x * Fy - y * Fx, Mh: -y * Fx, Mv: x * Fy, cat });
+    let Wwall = 0;
+    g.polys.forEach(p => {
+      const pp = polyProps(p.pts), W = pp.A * p.gamma;
+      add(p.name, 0, -W, pp.cx, pp.cy, p.kind);
+      if (p.kind === 'wall') Wwall += W;
+      if (kh > 0 && p.kind === 'wall') add('Inersia seismik: ' + p.name, -kh * W, 0, pp.cx, pp.cy, 'seismic');
+    });
+    // tekanan tanah
+    const Kres = wedgeK(+bf.phi, +g.delta, +g.omega, +bf.beta, kh);
+    const K = Kres && Kres.K;
+    const yW = opt.noWater ? -1e9 : (+w.water.hw > 0 ? g.face.A[1] + (+w.water.hw) : -1e9);
+    const T = faceThrust(K, g.face.A[1], g.face.B[1], g.omega * D2R, { gamma: +bf.gamma, gammaSat: +bf.gammaSat }, yW, q, gw);
+    const ang = (g.delta - g.omega) * D2R; // sudut daya di bawah ufuk
+    const om = g.omega * D2R;
+    const xAt = y => g.face.A[0] + (y - g.face.A[1]) * Math.tan(om);
+    add('Tekanan tanah aktif', -T.Ps * Math.cos(ang), -T.Ps * Math.sin(ang), xAt(T.ys), T.ys, 'earth');
+    if (T.Pq > 0) add('Tekanan surcaj', -T.Pq * Math.cos(ang), -T.Pq * Math.sin(ang), xAt(T.yq), T.yq, 'surcharge');
+    if (T.Pw > 0) add('Tekanan air (belakang)', -T.Pw, T.Pw * Math.tan(om), xAt(T.yw), T.yw, 'water');
+    // daya angkat
+    if (!opt.noWater) {
+      const uh = Math.max(0, gw * (yW - By)), ut = Math.max(0, gw * (+w.water.hwf || 0));
+      if (uh + ut > 0) {
+        const U = (uh + ut) / 2 * Bw, s = Bw * (ut + 2 * uh) / (3 * (ut + uh));
+        add('Daya angkat (uplift)', U * nx, U * ny, s * tx, s * ty, 'water');
+      }
+    }
+    const Fx = items.reduce((a, i) => a + i.Fx, 0), Fy = items.reduce((a, i) => a + i.Fy, 0);
+    const Mt = items.reduce((a, i) => a + i.M, 0);
+    const comps = items.flatMap(i => [i.Mh, i.Mv]);
+    const Mo = comps.filter(m => m > 0).reduce((a, m) => a + m, 0);
+    const Mr = -comps.filter(m => m < 0).reduce((a, m) => a + m, 0);
+    const N = -(Fx * nx + Fy * ny);          // daya normal ke tapak
+    const Tsl = -Fx * tx - Fy * ty;           // daya gelongsor ke arah hadapan
+    // rintangan gelongsor
+    const mu = opt.mu != null ? opt.mu : Math.tan((+fd.deltaRatio) * (+fd.phi) * D2R);
+    const cb = opt.mu != null ? 0 : (+fd.cBase || 0);
+    let Pp = 0;
+    if (!opt.noPassive && w.passive.on && +fd.D > 0) Pp = 0.5 * rankineKp(+fd.phi) * (+fd.gamma) * (+fd.D) ** 2 * (+w.passive.factor);
+    const Rsl = Math.max(0, N) * mu + cb * Bw + Pp;
+    const FSs = Tsl > 0 ? Rsl / Tsl : Infinity;
+    const FSo = Mo > 0 ? Mr / Mo : Infinity;
+    const s = N > 0 ? -Mt / N : NaN; // jarak paduan dari kaki di sepanjang tapak
+    const e = Bw / 2 - s;
+    let qmax, qmin, qToe, qHeel;
+    if (Math.abs(e) <= Bw / 6) { qmax = N / Bw * (1 + 6 * Math.abs(e) / Bw); qmin = N / Bw * (1 - 6 * Math.abs(e) / Bw); }
+    else { const sEff = e > 0 ? s : Bw - s; qmax = sEff > 0 ? 2 * N / (3 * sEff) : Infinity; qmin = 0; }
+    qToe = e >= 0 ? qmax : qmin; qHeel = e >= 0 ? qmin : qmax;
+    const res = { items, K, rho: Kres && Kres.rho, T, Fx, Fy, N, Tsl, Mo, Mr, Mt, FSs, FSo, s, e, Bw, alpha, qmax, qmin, qToe, qHeel, Pp, Rsl, mu, Wwall, kh };
+    if (!opt.noBearing) {
+      const Bp = Math.max(0.01, Bw - 2 * Math.abs(e));
+      const bc = bearingEC7(+fd.phi, +fd.c, +fd.gamma, (+fd.gamma) * (+fd.D), Bp, Math.max(N, 1e-6), Math.max(Tsl, 0));
+      res.bearing = { ...bc, Bp, qeff: N / Bp, FSb: bc.qult / (N / Bp), qa: +fd.qa };
+    }
+    return res;
+  }
+
+  /* ---------------- Semakan dalaman ---------------- */
+  function gabionCourses(g, w) {
+    const out = [], L = g.layers, a = g.tilt, phiG = +w.gabion.phiInt || 35;
+    let yb = 0;
+    for (let j = 1; j < L.length; j++) {
+      yb += L[j - 1].h;
+      const sub = L.slice(j), x0 = g.w0 - sub[0].w; // hadapan lapis j sebagai kaki baharu
+      let y = 0; const polys = [];
+      sub.forEach((l, i) => {
+        const xa = g.w0 - l.w - x0, xb = g.w0 - x0;
+        polys.push({ pts: [[xa, y], [xb, y], [xb, y + l.h], [xa, y + l.h]].map(p => rotCW(p, a)), gamma: g.gam, kind: 'wall', name: 'Lapis ' + (j + i + 1) });
+        y += l.h;
+      });
+      const A = rotCW([g.w0 - x0, 0], a), B = rotCW([g.w0 - x0, y], a);
+      const gs = { ...g, polys, face: { A, B }, heel: A };
+      const ws = { ...w, water: { hw: Math.max(0, (+w.water.hw) - yb), hwf: 0 } };
+      const r = checkWall(gs, ws, { noPassive: true, noBearing: true, mu: Math.tan(phiG * D2R) });
+      out.push({ level: yb, above: sub.length, B: sub[0].w, FSs: r.FSs, FSo: r.FSo, e: r.e, B6: sub[0].w / 6, qmax: r.qmax });
+    }
+    return out;
+  }
+  function trapSections(g, w) {
+    const t = w[g.type], H = g.H, out = [], gr = g.trap;
+    [0.25, 0.5, 0.75].forEach(fr => {
+      const y0 = H * fr;
+      const xf = gr.nf * y0, xbk = gr.Bb + (gr.backTop[0] - gr.Bb) * fr;
+      const pts = [[0, 0], [xbk - xf, 0], [gr.backTop[0] - xf, H - y0], [gr.nf * H - xf, H - y0]];
+      const gs = { ...g, polys: [{ pts, gamma: +t.gamma, kind: 'wall', name: 'Atas keratan' }], face: { A: [xbk - xf, 0], B: [gr.backTop[0] - xf, H - y0] }, heel: [xbk - xf, 0] };
+      const ws = { ...w, water: { hw: Math.max(0, (+w.water.hw) - y0), hwf: 0 } };
+      const r = checkWall(gs, ws, { noPassive: true, noBearing: true, mu: Math.tan((+t.phiJoint || 35) * D2R) });
+      out.push({ level: y0, b: xbk - xf, FSs: r.FSs, FSo: r.FSo, e: r.e, b6: (xbk - xf) / 6, qmax: r.qmax, qmin: r.qmin, sAllow: +t.sAllow });
+    });
+    return out;
+  }
+  function mseInternal(g, w) {
+    const t = w.mse, H = +t.H, Sv = +t.Sv, phi = +t.phiR, Ka = rankineKa(phi) * (+t.krFactor || 1);
+    const q = +w.loads.q || 0, gr = +t.gammaR, out = [];
+    for (let z = Sv / 2; z < H; z += Sv) {
+      const sv = gr * z + q;
+      const Tmax = Ka * sv * Sv;
+      const La = (H - z) * Math.tan((45 - phi / 2) * D2R);
+      const Le = Math.max(0, +t.L - La);
+      const Pr = 2 * Le * gr * z * (+t.Ci) * Math.tan(phi * D2R);
+      out.push({ z, sv, Tmax, La, Le, Pr, FSpo: Pr / Tmax, FSt: (+t.Tallow) / Tmax });
+    }
+    return { layers: out, Ka };
+  }
+
+  /* ---------------- Rekabentuk struktur RC (EC2, per m) ---------------- */
+  function rcSection(M, V, h, bar, cover, fck, fyk) {
+    const b = 1000, d = h * 1000 - cover - bar / 2; // mm
+    const Mn = M * 1e6;
+    const K = Mn / (b * d * d * fck);
+    const Kbal = 0.167;
+    const z = Math.min(0.95 * d, d * (0.5 + Math.sqrt(Math.max(0, 0.25 - K / 1.134))));
+    const AsReq = Mn / (0.87 * fyk * z);
+    const fctm = 0.3 * Math.pow(fck, 2 / 3);
+    const AsMin = Math.max(0.26 * fctm / fyk * b * d, 0.0013 * b * d);
+    const As = Math.max(AsReq, AsMin);
+    const Ab = Math.PI * bar * bar / 4;
+    let s = Math.floor(1000 * Ab / As / 25) * 25; s = Math.min(s, 300);
+    const AsProv = s > 0 ? 1000 * Ab / s : 0;
+    const k = Math.min(2, 1 + Math.sqrt(200 / d));
+    const rho = Math.min(0.02, AsProv / (b * d));
+    const vmin = 0.035 * Math.pow(k, 1.5) * Math.sqrt(fck);
+    const VRdc = Math.max(0.12 * k * Math.cbrt(100 * rho * fck), vmin) * b * d / 1000; // kN
+    return { d, K, Kok: K <= Kbal, z, AsReq, AsMin, As, bar, s, AsProv, VRdc, V, Vok: V <= VRdc, M };
+  }
+  function rcDesign(g, w, ext) {
+    const t = w.rc, bf = w.backfill, gF = +t.gF || 1.4, fck = +t.fck, fyk = +t.fyk, cv = +t.cover;
+    const hs = g.H - g.tb, q = +w.loads.q || 0, gw = 9.81;
+    // batang: tekanan pada muka tegak dari atas batang ke atas tapak
+    const Ks = (ext.K || rankineKa(+bf.phi)) * Math.cos(bf.beta * D2R);
+    const yW = +w.water.hw > 0 ? +w.water.hw : -1e9;
+    let Vs = 0, Ms = 0; const N = 200, dz = hs / N;
+    for (let i = 0; i < N; i++) {
+      const z = (i + 0.5) * dz, y = g.H - z;
+      const zw = Math.max(0, g.H - yW);
+      const sv = (+bf.gamma) * Math.min(z, zw) + ((+bf.gammaSat) - gw) * Math.max(0, z - zw);
+      const p = Ks * (sv + q) + (y < yW ? gw * (yW - y) : 0);
+      Vs += p * dz; Ms += p * dz * (y - g.tb);
+    }
+    const stem = rcSection(gF * Ms, gF * Vs, g.tbo, +t.barStem, cv, fck, fyk);
+    // tumit: beban turun (tanah + tapak + q) tolak tekanan galas
+    const qAt = x => ext.qToe + (ext.qHeel - ext.qToe) * x / ext.Bw;
+    const ySoilTop = x => g.H + (x - g.xst) * Math.tan(bf.beta * D2R);
+    let Mh = 0, Vh = 0, Mt = 0, Vt = 0;
+    const nh = 100, dxh = g.heelL / nh;
+    for (let i = 0; i < nh; i++) {
+      const x = g.xsb + (i + 0.5) * dxh, arm = x - g.xsb;
+      const down = (+bf.gamma) * (ySoilTop(x) - g.tb) + (+t.gammaC) * g.tb + q;
+      const net = down - qAt(x);
+      Mh += net * dxh * arm; Vh += net * dxh;
+    }
+    const nt = 100, dxt = g.toe / nt;
+    for (let i = 0; i < nt; i++) {
+      const x = (i + 0.5) * dxt, arm = g.toe - x;
+      const net = qAt(x) - (+t.gammaC) * g.tb;
+      Mt += net * dxt * arm; Vt += net * dxt;
+    }
+    const heel = rcSection(gF * Math.max(Mh, 0), gF * Math.abs(Vh), g.tb, +t.barBase, cv, fck, fyk);
+    const toe = rcSection(gF * Math.max(Mt, 0), gF * Math.abs(Vt), g.tb, +t.barBase, cv, fck, fyk);
+    const kgm = (As, L) => As * 1e-6 * L * 7850; // kg per m panjang tembok
+    const steel = kgm(stem.AsProv, hs + 0.6) + kgm(heel.AsProv, g.B) + kgm(toe.AsProv, g.B)
+      + kgm(0.2 * stem.AsProv, hs) * 1 + kgm(0.2 * Math.max(heel.AsProv, toe.AsProv), g.B) * 2;
+    return { gF, stem, heel, toe, Ms, Vs, Mh, Vh, Mt, Vt, steel, hs };
+  }
+
+  /* ---------------- Cerucuk keping julur (sheet pile) ---------------- */
+  function sheetPile(w) {
+    const t = w.sheet, bf = w.backfill, H = +t.H, q = +w.loads.q || 0, g = +bf.gamma;
+    const Ka = rankineKa(+bf.phi), Kp = rankineKp(+bf.phi) / (+t.Fp);
+    const sa = z => Ka * (g * z + q), sp = z => z > H ? Kp * g * (z - H) : 0;
+    const momentAboutToe = D => { // aktif (+) tolak pasif
+      const L = H + D, N = 400, dz = L / N; let M = 0;
+      for (let i = 0; i < N; i++) { const z = (i + 0.5) * dz; M += (sa(z) - sp(z)) * dz * (L - z); }
+      return M;
+    };
+    let lo = 0.01, hi = 5 * H;
+    if (momentAboutToe(hi) > 0) return { ok: false, Ka, Kp };
+    for (let k = 0; k < 60; k++) { const m = (lo + hi) / 2; if (momentAboutToe(m) > 0) lo = m; else hi = m; }
+    const D0 = hi, Dd = D0 * (+t.extend || 1.2);
+    // momen maksimum pada ricih sifar
+    const N = 2000, L = H + D0, dz = L / N; let V = 0, M = 0, Mmax = 0, zM = 0;
+    for (let i = 0; i < N; i++) {
+      const z = (i + 0.5) * dz; const p = sa(z) - sp(z);
+      M += V * dz + p * dz * dz / 2; V += p * dz;
+      if (M > Mmax) { Mmax = M; zM = z; }
+      if (V < 0) break;
+    }
+    const MEd = 1.35 * Mmax;
+    const Zreq = MEd * 1e6 / (+t.fy) / 1e3; // cm3/m
+    return { ok: true, Ka, Kp, D0, Dd, Ltot: H + Dd, Mmax, zM, MEd, Zreq, Zprov: +t.Zprov, Zok: +t.Zprov >= Zreq };
+  }
+
+  /* ---------------- Jalankan semua ---------------- */
+  function runWall(w) {
+    if (w.type === 'sheet') return { type: 'sheet', sheet: sheetPile(w) };
+    const g = buildWall(w);
+    const seismic = (+w.loads.kh || 0) > 0;
+    const ext = checkWall(g, w);
+    const F = w.fos;
+    const need = { s: seismic ? +F.sSl : +F.sl, o: seismic ? +F.sOt : +F.ot, b: seismic ? +F.sBr : +F.br };
+    const eLim = ext.Bw / (w.fos.eRock ? 4 : 6);
+    const checks = [
+      { name: 'Gelongsor', val: ext.FSs, req: need.s, ok: ext.FSs >= need.s, fmt: 'FOS' },
+      { name: 'Terbalik', val: ext.FSo, req: need.o, ok: ext.FSo >= need.o, fmt: 'FOS' },
+      { name: `Kesipian e ≤ B/${w.fos.eRock ? 4 : 6}`, val: Math.abs(ext.e), req: eLim, ok: Math.abs(ext.e) <= eLim, fmt: 'm', inv: true },
+    ];
+    if (w.found.method === 'qa') checks.push({ name: 'Tekanan galas maks ≤ qa', val: ext.qmax, req: +w.found.qa, ok: ext.qmax <= +w.found.qa, fmt: 'kPa', inv: true });
+    else checks.push({ name: 'Keupayaan galas (EC7 Lamp. D)', val: ext.bearing.FSb, req: need.b, ok: ext.bearing.FSb >= need.b, fmt: 'FOS' });
+    const out = { type: w.type, g, ext, checks, need, seismic };
+    if (w.type === 'gabion') { out.courses = gabionCourses(g, w); out.volume = g.polys.reduce((a, p) => a + polyProps(p.pts).A, 0); }
+    if (w.type === 'gravity' || w.type === 'rubble' || w.type === 'crib') { out.sections = trapSections(g, w); out.volume = polyProps(g.polys[0].pts).A; }
+    if (w.type === 'rc') { out.rc = rcDesign(g, w, ext); out.volume = g.polys.filter(p => p.kind === 'wall').reduce((a, p) => a + polyProps(p.pts).A, 0); }
+    if (w.type === 'mse') { out.mse = mseInternal(g, w); out.volume = polyProps(g.polys[0].pts).A; }
+    return out;
+  }
+
+  const API = { wedgeK, rankineKa, rankineKp, coulombKa, buildWall, checkWall, bearingEC7, rcSection, rcDesign, sheetPile, runWall, polyProps, rotCW, faceThrust };
+  if (typeof module !== 'undefined' && module.exports) module.exports = API;
+  else root.WallEngine = API;
+})(this);
+
 </script>
 <script>
 (function(){
 'use strict';
-const E = window.SlopeEngine;
+const E = window.SlopeEngine, WE = window.WallEngine;
+let RW = null; // keputusan tembok
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const f = (v, d=2) => (v==null || !isFinite(v)) ? '—' : (+v).toFixed(d);
@@ -648,6 +1043,18 @@ function sample(){
     criteria:{ life:'high', econ:'low', seismic:1.1,
       table:{ life:{negligible:1.1, low:1.2, high:1.4}, econ:{negligible:1.1, low:1.2, high:1.4} } },
     rules:{ maxBench:6, minBerm:2, minN:1.5 },
+    wall:{ type:'rc', include:true, length:50,
+      gravity:{ H:3, Bbase:2.1, Btop:0.6, nf:0.15, gamma:24, sAllow:3000, phiJoint:35 },
+      rubble:{ H:2.5, Bbase:1.8, Btop:0.5, nf:0.15, gamma:22, sAllow:700, phiJoint:35 },
+      crib:{ H:4, Bbase:1.8, Btop:1.8, nf:0.25, gamma:18, sAllow:500, phiJoint:35 },
+      gabion:{ tilt:6, gammaRock:25, porosity:0.3, phiInt:35, layers:[{w:2.5,h:1},{w:2,h:1},{w:1.5,h:1},{w:1,h:1}] },
+      rc:{ H:4, tb:0.4, tTop:0.25, tBot:0.4, toe:0.8, heel:1.8, gammaC:25, fck:30, fyk:500, cover:50, barStem:16, barBase:16, gF:1.4 },
+      mse:{ H:6, L:4.5, Sv:0.5, Tallow:25, Ci:0.8, phiR:34, gammaR:19, krFactor:1 },
+      sheet:{ H:3, Fp:1.5, extend:1.2, fy:355, Zprov:1000 },
+      backfill:{ gamma:19, gammaSat:20, phi:30, beta:0, deltaRatio:0.67 },
+      found:{ gamma:19, phi:30, c:5, D:0.6, method:'calc', qa:200, deltaRatio:1.0, cBase:0 },
+      water:{ hw:0, hwf:0 }, loads:{ q:10, kh:0 }, passive:{ on:false, factor:0.5 },
+      fos:{ sl:1.5, ot:2.0, br:3.0, sSl:1.1, sOt:1.5, sBr:2.0, eRock:false } },
   };
 }
 function blank(){
@@ -666,7 +1073,7 @@ const VIEW = { slices:true, top:false, grid:false, rein:true };
 const MODS = [
   ['projek','Maklumat projek'], ['geometri','Geometri cerun'], ['tanah','Lapisan tanah'], ['air','Air bumi & beban'],
   ['analisis','Analisis bulatan'], ['paku','Paku tanah'], ['tak-terhingga','Cerun tak terhingga'], ['kerja-tanah','Kerja tanah & kuantiti'],
-  ['kriteria','Kriteria JKR'], ['laporan','Laporan'],
+  ['tembok','Tembok penahan'], ['kriteria','Kriteria JKR'], ['laporan','Laporan'],
 ];
 let cur = (location.hash || '').slice(1);
 if (!MODS.some(m => m[0] === cur)) cur = 'projek';
@@ -676,6 +1083,7 @@ function navStatus(id){
   if (id === 'analisis') { const b = R.unrein.best[R.primary]; return !b ? 'warn' : b.FS[R.primary] >= reqFS() ? 'ok' : 'bad'; }
   if (id === 'paku') { if (!P.nails.enabled) return ''; const b = R.rein && R.rein.best[R.primary]; return !b ? 'warn' : b.FS[R.primary] >= reqFS() ? 'ok' : 'bad'; }
   if (id === 'tak-terhingga') return R.inf.FS >= +P.infinite.target ? 'ok' : 'bad';
+  if (id === 'tembok') return !RW ? 'warn' : wallStatus().every(c => c.ok) ? 'ok' : 'bad';
   if (id === 'geometri') return R.geo.every(g => g.ok) ? 'ok' : 'warn';
   return '';
 }
@@ -854,6 +1262,53 @@ paku: () => `
   <h3>Kuantiti</h3>
   <div id="ewRes"></div>`,
 
+tembok: () => { const w = P.wall, T = w.type; return `
+  <h2>Tembok penahan</h2>
+  <p class="lede">Rekabentuk per meter panjang. Tekanan tanah dikira dengan kaedah baji cuba-jaya Coulomb (sah untuk muka condong, timbus bercerun dan seismik Mononobe–Okabe), diikuti kestabilan luaran, semakan dalaman dan rekabentuk struktur.</p>
+  <div class="fields">
+    ${fld('wall.type','Jenis tembok','',{type:'select',options:Object.entries(WTYPES).map(([k,v])=>[k,v.name])})}
+    ${fld('wall.length','Panjang tembok (untuk kuantiti)','m')}
+  </div>
+  <p class="hint">${WTYPES[T].desc}</p>
+  <div style="margin-top:10px">${fld('wall.include','Sertakan tembok dalam laporan','',{type:'check'})}</div>
+  <h3>Geometri & bahan</h3>
+  ${wallGeomFields(T)}
+  <h3>Tanah timbus (di belakang tembok)</h3>
+  <div class="fields">
+    ${fld('wall.backfill.gamma','γ','kN/m³')}
+    ${T!=='sheet'?fld('wall.backfill.gammaSat','γsat','kN/m³'):''}
+    ${fld('wall.backfill.phi','φ′','°')}
+    ${T!=='sheet'?fld('wall.backfill.beta','Cerun timbus β','°')+fld('wall.backfill.deltaRatio','Geseran dinding δ/φ′',''):''}
+  </div>
+  ${T==='sheet'?'<p class="hint">Tanah yang sama dianggap di kedua-dua belah cerucuk (tanah berbutir, c′ = 0, tiada air).</p>':`
+  <p class="hint">${T==='rc'||T==='mse'?'Tekanan dikira pada satah maya tegak di hujung tumit/blok, dengan δ = β (Rankine).':'δ/φ′ lazim: 0.67 untuk konkrit/batu, 0.67–1.0 untuk gabion.'} Tanah timbus berbutir yang bersalir disyorkan.</p>
+  <h3>Tanah asas</h3>
+  <div class="fields">
+    ${fld('wall.found.gamma','γ','kN/m³')}${fld('wall.found.phi','φ′','°')}${fld('wall.found.c','c′','kPa')}
+    ${fld('wall.found.D','Kedalaman tertanam D','m')}
+    ${fld('wall.found.method','Semakan galas','',{type:'select',options:[['calc','Kira keupayaan galas (EC7)'],['qa','Guna tekanan galas dibenarkan qa']]})}
+    ${fld('wall.found.qa','qa','kPa')}
+    ${fld('wall.found.deltaRatio','Geseran tapak δb/φ′','')}${fld('wall.found.cBase','Lekatan tapak cb','kPa')}
+  </div>
+  <p class="hint">δb/φ′ = 1.0 untuk konkrit tuang di tapak; 0.67 untuk unit pratuang yang licin.</p>
+  <h3>Air bumi</h3>
+  <div class="fields">${fld('wall.water.hw','Aras air di belakang (dari dasar)','m')}${fld('wall.water.hwf','Aras air di hadapan (dari dasar)','m')}</div>
+  <p class="hint">Jika lubang salir (weep hole) dan saliran belakang berfungsi, hw boleh diambil 0. Semak juga keadaan saliran tersumbat.</p>
+  <h3>Rintangan pasif</h3>
+  <div class="fields">${fld('wall.passive.on','Ambil kira tekanan pasif di hadapan','',{type:'check'})}${fld('wall.passive.factor','Faktor pengurangan Pp','')}</div>`}
+  <h3>Beban</h3>
+  <div class="fields">${fld('wall.loads.q','Surcaj q','kPa')}${T!=='sheet'?fld('wall.loads.kh','Pekali seismik kh',''):''}</div>
+  ${T!=='sheet'?`<h3>Faktor keselamatan minimum</h3>
+  <div class="tblwrap"><table class="edit"><thead><tr><th>Semakan</th><th class="num">Statik</th><th class="num">Seismik</th></tr></thead><tbody>
+    <tr><td>Gelongsor</td><td>${cell('wall.fos.sl')}</td><td>${cell('wall.fos.sSl')}</td></tr>
+    <tr><td>Terbalik</td><td>${cell('wall.fos.ot')}</td><td>${cell('wall.fos.sOt')}</td></tr>
+    <tr><td>Keupayaan galas</td><td>${cell('wall.fos.br')}</td><td>${cell('wall.fos.sBr')}</td></tr>
+  </tbody></table></div>
+  <div style="margin-top:10px">${fld('wall.fos.eRock','Tapak di atas batuan (had kesipian B/4)','',{type:'check'})}</div>
+  <p class="hint">Nilai lalai 1.5 / 2.0 / 3.0 ialah amalan lazim (BS 8002, garis panduan JKR). Sahkan dengan spesifikasi projek.</p>`:''}
+  <h3>Keputusan</h3>
+  <div id="wallRes"></div>`; },
+
 kriteria: () => `
   <h2>Kriteria JKR</h2>
   <p class="lede">FOS minimum ditentukan oleh kategori risiko kepada nyawa dan risiko ekonomi; nilai yang lebih tinggi digunakan. Jadual boleh diubah mengikut garis panduan yang berkuat kuasa untuk projek.</p>
@@ -887,6 +1342,7 @@ let timer = null;
 function schedule(){ clearTimeout(timer); timer = setTimeout(compute, 250); }
 function compute(){
   try { R = E.runAll(P); } catch(e){ console.error(e); R = null; }
+  try { RW = WE.runWall(P.wall); } catch(e){ console.error(e); RW = null; }
   try { localStorage.setItem(STORE, JSON.stringify(P)); } catch(e){}
   renderNav();
   updateOutputs();
@@ -1017,7 +1473,12 @@ function summaryHTML(){
 /* ---------- Kemas kini paparan output ---------- */
 function updateOutputs(){
   const lbl = $('#projLabel'); if (lbl) lbl.textContent = P.info.name || '';
-  if (cur !== 'laporan' && cur !== 'tak-terhingga') {
+  const wr = document.getElementById('wallRes'); if (wr) wr.innerHTML = wallResHTML();
+  if (cur === 'tembok') {
+    $('#figTitle').textContent = 'Keratan tembok'; $('#figOpts').hidden = true;
+    $('#fig').innerHTML = drawWall(); $('#legend').innerHTML = wallLegend(); $('#summary').innerHTML = wallSummaryHTML();
+  } else if (cur !== 'laporan' && cur !== 'tak-terhingga') {
+    $('#figTitle').textContent = 'Keratan rentas'; $('#figOpts').hidden = false;
     $('#fig').innerHTML = drawSection();
     $('#legend').innerHTML = legendHTML();
     $('#summary').innerHTML = summaryHTML();
@@ -1153,9 +1614,263 @@ function reportHTML(){
     <p>β = ${f(P.infinite.beta,1)}°, z = ${f(P.infinite.z,2)} m, c′ = ${f(P.infinite.c,1)} kPa, φ′ = ${f(P.infinite.phi,1)}°, m = ${f(P.infinite.m,2)} → <b>FOS = ${f(R.inf.FS,3)}</b> ${pass(R.inf.FS, +P.infinite.target)} (sasaran ${f(P.infinite.target,2)}).</p>
     <h4>${R.rein?'8':'7'}. Kuantiti anggaran</h4>
     ${ewHTML()}
+    ${P.wall.include && RW ? wallReportHTML() : ''}
     <h4>Kenyataan</h4>
     <p class="mini">Analisis keseimbangan had 2D untuk permukaan gelinciran bulatan. Keputusan bergantung pada ketepatan parameter tanah dan paras air bumi. Rekabentuk ini mesti disemak dan disahkan oleh Jurutera Profesional berdaftar dengan BEM sebelum digunakan untuk pembinaan. Permukaan bukan bulatan, kegagalan baji batuan dan aliran rembesan terperinci memerlukan analisis berasingan.</p>
     <div class="sig"><div>Disediakan oleh<br><b style="color:var(--ink)">${esc(I.engineer)}</b></div><div>Disemak oleh<br><b style="color:var(--ink)">${esc(I.checker)}</b></div><div>Diluluskan oleh</div></div>`;
+}
+
+/* ---------- Modul tembok penahan ---------- */
+const WTYPES = {
+  gravity:{ name:'Konkrit graviti (mass concrete)', desc:'Tembok konkrit tanpa tetulang yang bergantung pada beratnya sendiri. Sesuai sehingga kira-kira 3 m. Keratan dalaman disemak supaya tiada tegangan (e ≤ b/6).' },
+  rubble:{ name:'Batu-batan (rubble masonry)', desc:'Batu sungai/kuari diikat dengan mortar. Lazim untuk tembok rendah (≤ 3 m) di tepi jalan dan longkang. Tegasan mampatan dan tegangan pada sambungan mortar disemak.' },
+  gabion:{ name:'Gabion', desc:'Bakul dawai bersalut berisi batu, disusun berlapis dengan muka hadapan bertingkat dan belakang sejajar. Fleksibel dan bersalir. Lapisan disusun dari bawah ke atas; setiap aras antara lapis disemak.' },
+  rc:{ name:'Konkrit bertetulang julur (RC cantilever)', desc:'Batang (stem) dan tapak bertetulang; berat tanah di atas tumit menambah kestabilan. Lazim untuk 3–7 m. Termasuk rekabentuk tetulang batang, tumit dan kaki (EC2).' },
+  mse:{ name:'Tanah bertetulang (MSE / geogrid)', desc:'Blok tanah dipadatkan berlapis dengan tetulang geosintetik atau jalur keluli. Kestabilan luaran sebagai blok graviti, dan semakan dalaman tegangan serta cabut keluar setiap lapisan.' },
+  crib:{ name:'Tembok crib', desc:'Rangka kotak konkrit pratuang atau kayu yang diisi tanah berbutir atau batu, biasanya dicondongkan ke belakang. Dianalisis sebagai blok graviti dengan unit berat berkesan.' },
+  sheet:{ name:'Cerucuk keping julur (sheet pile)', desc:'Cerucuk keluli julur (tanpa sauh) dalam tanah berbutir, kaedah ringkas: kedalaman benaman daripada keseimbangan momen di hujung, ditambah 20%, dan modulus keratan yang diperlukan.' },
+};
+function wallGeomFields(T){
+  const w = P.wall;
+  if (T === 'gravity' || T === 'rubble' || T === 'crib') return `<div class="fields">
+    ${fld(`wall.${T}.H`,'Tinggi H','m')}${fld(`wall.${T}.Bbase`,'Lebar tapak B','m')}${fld(`wall.${T}.Btop`,'Lebar atas','m')}
+    ${fld(`wall.${T}.nf`,'Kecondongan muka hadapan','H:1V')}${fld(`wall.${T}.gamma`,T==='crib'?'Unit berat berkesan':'Unit berat bahan','kN/m³')}
+    ${fld(`wall.${T}.sAllow`,'Tegasan mampatan dibenarkan','kPa')}${fld(`wall.${T}.phiJoint`,'Sudut geseran sambungan','°')}
+  </div><p class="hint">Muka belakang dikira daripada lebar tapak, lebar atas dan kecondongan hadapan. ${T==='crib'?'Untuk crib, unit berat berkesan ≈ γ pengisi × (1 − ruang kosong) + rangka.':''}</p>`;
+  if (T === 'gabion') return `<div class="fields">
+    ${fld('wall.gabion.tilt','Condong ke belakang','°')}${fld('wall.gabion.gammaRock','Unit berat batu','kN/m³')}
+    ${fld('wall.gabion.porosity','Keliangan n','')}${fld('wall.gabion.phiInt','Geseran antara lapis','°')}
+  </div>
+  <div class="tblwrap" style="margin-top:12px"><table class="edit"><thead><tr><th>Lapis (dari bawah)</th><th class="num">Lebar (m)</th><th class="num">Tinggi (m)</th><th></th></tr></thead><tbody>
+  ${w.gabion.layers.map((l,i)=>`<tr><td>${i+1}</td><td>${cell(`wall.gabion.layers.${i}.w`)}</td><td>${cell(`wall.gabion.layers.${i}.h`)}</td><td><button class="ghost" data-del="wall.gabion.layers" data-i="${i}">Buang</button></td></tr>`).join('')}
+  </tbody></table></div>
+  <div class="rowbtns"><button data-add="glayer">+ Tambah lapis</button></div>
+  <p class="hint">γ gabion = γ batu × (1 − n) = ${f((+w.gabion.gammaRock)*(1-(+w.gabion.porosity)),2)} kN/m³. Saiz bakul lazim 1.0 m atau 0.5 m tinggi. Condong lazim 6° (≈ 1:10).</p>`;
+  if (T === 'rc') return `<div class="fields">
+    ${fld('wall.rc.H','Tinggi keseluruhan H (dari bawah tapak)','m')}${fld('wall.rc.tb','Tebal tapak','m')}
+    ${fld('wall.rc.tTop','Tebal batang di atas','m')}${fld('wall.rc.tBot','Tebal batang di bawah','m')}
+    ${fld('wall.rc.toe','Panjang kaki (toe)','m')}${fld('wall.rc.heel','Panjang tumit (heel)','m')}${fld('wall.rc.gammaC','Unit berat konkrit','kN/m³')}
+  </div>
+  <h3>Bahan & tetulang</h3>
+  <div class="fields">
+    ${fld('wall.rc.fck','fck','MPa')}${fld('wall.rc.fyk','fyk','MPa')}${fld('wall.rc.cover','Penutup konkrit','mm')}
+    ${fld('wall.rc.barStem','Diameter bar batang','mm')}${fld('wall.rc.barBase','Diameter bar tapak','mm')}${fld('wall.rc.gF','Faktor beban γF','')}
+  </div><p class="hint">Lebar tapak lazim 0.5H–0.7H. Momen reka = γF × momen khidmat (γF = 1.4 anggaran gabungan beban kekal dan surcaj).</p>`;
+  if (T === 'mse') return `<div class="fields">
+    ${fld('wall.mse.H','Tinggi H','m')}${fld('wall.mse.L','Panjang tetulang L','m')}${fld('wall.mse.Sv','Jarak tegak tetulang Sv','m')}
+    ${fld('wall.mse.Tallow','Kekuatan reka tetulang (LTDS/FS)','kN/m')}${fld('wall.mse.Ci','Pekali interaksi Ci','')}
+    ${fld('wall.mse.phiR','φ′ timbus bertetulang','°')}${fld('wall.mse.gammaR','γ timbus bertetulang','kN/m³')}${fld('wall.mse.krFactor','Faktor Kr/Ka','')}
+  </div><p class="hint">L minimum lazim 0.7H dan ≥ 2.5 m. Kr/Ka = 1.0 untuk geosintetik; 1.2–1.7 untuk jalur keluli (bergantung pada kedalaman).</p>`;
+  if (T === 'sheet') return `<div class="fields">
+    ${fld('wall.sheet.H','Tinggi tertahan H','m')}${fld('wall.sheet.Fp','Faktor keselamatan pada Kp','')}${fld('wall.sheet.extend','Faktor tambahan kedalaman','')}
+    ${fld('wall.sheet.fy','fy keluli','MPa')}${fld('wall.sheet.Zprov','Modulus keratan dibekalkan','cm³/m')}
+  </div><p class="hint">Kaedah ringkas cerucuk julur: kedalaman D0 daripada keseimbangan momen di hujung; kedalaman reka = faktor × D0 (lazim 1.2). M_Ed = 1.35 Mmax; Z perlu = M_Ed / fy.</p>`;
+  return '';
+}
+function wallStatus(){
+  if (!RW) return [];
+  const st = [];
+  if (RW.type === 'sheet') { const s = RW.sheet; st.push({ name:'Penyelesaian kedalaman', ok: s.ok }); if (s.ok) st.push({ name:'Modulus keratan', ok: s.Zok }); return st; }
+  RW.checks.forEach(c => st.push({ name:c.name, ok:c.ok }));
+  if (RW.courses) st.push({ name:'Semakan setiap lapis gabion', ok: RW.courses.every(c => c.FSs >= RW.need.s && c.FSo >= RW.need.o && Math.abs(c.e) <= c.B6) });
+  if (RW.sections) st.push({ name:'Semakan keratan dalaman', ok: RW.sections.every(c => Math.abs(c.e) <= c.b6 && c.qmax <= c.sAllow && c.FSs >= RW.need.s) });
+  if (RW.rc) st.push({ name:'Rekabentuk struktur RC', ok: ['stem','heel','toe'].every(k => RW.rc[k].Kok && RW.rc[k].Vok && RW.rc[k].s >= 75) });
+  if (RW.mse) st.push({ name:'Tetulang dalaman MSE', ok: RW.mse.layers.every(l => l.FSpo >= 1.5 && l.FSt >= 1.0) });
+  return st;
+}
+const okPill = ok => ok ? '<span class="pill ok">Lulus</span>' : '<span class="pill bad">Gagal</span>';
+function wallSummaryHTML(){
+  if (RW && RW.type !== P.wall.type) return '';
+  if (!RW) return '<p>Ralat pengiraan tembok. Semak input.</p>';
+  const st = wallStatus(), all = st.every(c => c.ok), w = P.wall;
+  let body = '';
+  if (RW.type === 'sheet') {
+    const s = RW.sheet;
+    body = s.ok ? `<div class="kv"><div><small>Kedalaman benaman reka</small><strong>${f(s.Dd,2)} m</strong></div><div><small>Panjang cerucuk</small><strong>${f(s.Ltot,2)} m</strong></div><div><small>Mmax (khidmat)</small><strong>${f(s.Mmax,1)} kNm/m</strong></div><div><small>Z perlu / sedia</small><strong>${f(s.Zreq,0)} / ${f(s.Zprov,0)}</strong></div></div>` : '<div class="note"><b>Tiada penyelesaian.</b> Rintangan pasif tidak mencukupi; kurangkan Fp atau semak parameter.</div>';
+  } else {
+    body = `<div class="fos">${RW.checks.slice(0,3).map(c=>`<div><small>${c.name.split(' ')[0]}</small><strong>${c.fmt==='FOS'?f(c.val,2):f(c.val,3)}</strong><em>${c.fmt==='FOS'?'≥ '+f(c.req,2):'≤ '+f(c.req,3)+' m'}</em></div>`).join('')}</div>`;
+  }
+  return `<div class="hd"><b>Ringkasan tembok</b><span class="sp">${all?'<span class="pill ok">Semua lulus</span>':'<span class="pill bad">Perlu semakan</span>'}</span></div>
+    <div class="mini" style="margin-bottom:8px">${WTYPES[w.type].name}${RW.seismic?' · seismik kh = '+f(w.loads.kh,2):''}</div>${body}
+    <div class="status-list" style="margin-top:12px">${st.map(c=>`<div><span>${c.name}</span>${okPill(c.ok)}</div>`).join('')}</div>`;
+}
+function wallLegend(){
+  return `<span><i style="background:var(--slip)"></i>Tekanan tanah & paduan</span><span><i style="background:var(--water)"></i>Air</span><span><i style="background:var(--accent)"></i>Tekanan galas</span>${P.wall.type==='rc'?'<span><i style="background:var(--steel)"></i>Tetulang</span>':''}${P.wall.type==='mse'?'<span><i style="background:var(--nail)"></i>Tetulang geosintetik</span>':''}`;
+}
+function wallResHTML(open){
+  if (RW && RW.type !== P.wall.type) return '';
+  if (!RW) return '<div class="note"><b>Ralat pengiraan.</b> Semak semua input bernilai positif.</div>';
+  const w = P.wall;
+  if (RW.type === 'sheet') {
+    const s = RW.sheet;
+    if (!s.ok) return '<div class="note"><b>Tiada penyelesaian kedalaman.</b> Rintangan pasif (Kp/Fp) terlalu kecil berbanding Ka.</div>';
+    return `<div class="tblwrap"><table><tbody>
+      <tr><td>Ka (Rankine)</td><td class="num">${f(s.Ka,3)}</td></tr><tr><td>Kp / Fp</td><td class="num">${f(s.Kp,3)}</td></tr>
+      <tr><td>Kedalaman teori D0</td><td class="num">${f(s.D0,2)} m</td></tr><tr><td>Kedalaman reka D = ${f(w.sheet.extend,2)} × D0</td><td class="num"><b>${f(s.Dd,2)} m</b></td></tr>
+      <tr><td>Panjang cerucuk keseluruhan</td><td class="num"><b>${f(s.Ltot,2)} m</b></td></tr>
+      <tr><td>Momen maksimum (khidmat) pada kedalaman ${f(s.zM,2)} m</td><td class="num">${f(s.Mmax,1)} kNm/m</td></tr>
+      <tr><td>M_Ed = 1.35 × Mmax</td><td class="num">${f(s.MEd,1)} kNm/m</td></tr>
+      <tr><td>Modulus keratan perlu Z = M_Ed / fy</td><td class="num"><b>${f(s.Zreq,0)} cm³/m</b></td></tr>
+      <tr><td>Modulus keratan dibekalkan</td><td class="num">${f(s.Zprov,0)} cm³/m ${okPill(s.Zok)}</td></tr>
+      <tr><td>Berat keluli anggaran (pilih keratan sebenar)</td><td class="num">—</td></tr>
+    </tbody></table></div>
+    <p class="hint">Kaedah ringkas mengabaikan air dan tanah berlapis. Untuk H &gt; 4–5 m, gunakan cerucuk bersauh atau analisis interaksi tanah-struktur. Semak juga pesongan di kepala cerucuk.</p>`;
+  }
+  const x = RW.ext;
+  const fmtV = c => c.fmt === 'FOS' ? f(c.val,2) : f(c.val, c.fmt==='m'?3:1) + ' ' + c.fmt;
+  const fmtR = c => (c.inv ? '≤ ' : '≥ ') + (c.fmt === 'FOS' ? f(c.req,2) : f(c.req, c.fmt==='m'?3:1) + ' ' + c.fmt);
+  let h = `<div class="tblwrap"><table><thead><tr><th>Semakan kestabilan luaran</th><th class="num">Nilai</th><th class="num">Had</th><th>Status</th></tr></thead><tbody>
+    ${RW.checks.map(c=>`<tr><td>${c.name}</td><td class="num"><b>${fmtV(c)}</b></td><td class="num">${fmtR(c)}</td><td>${okPill(c.ok)}</td></tr>`).join('')}
+  </tbody></table></div>
+  <div class="kv" style="margin-top:12px">
+    <div><small>${RW.seismic?'K_AE (Mononobe–Okabe)':'Ka (Coulomb)'}</small><strong>${f(x.K,3)}</strong></div>
+    <div><small>Sudut satah gagal</small><strong>${f(x.rho,1)}°</strong></div>
+    <div><small>Daya normal N</small><strong>${f(x.N,1)} kN/m</strong></div>
+    <div><small>Daya gelongsor T</small><strong>${f(x.Tsl,1)} kN/m</strong></div>
+    <div><small>Lebar tapak B</small><strong>${f(x.Bw,2)} m</strong></div>
+    <div><small>Kesipian e</small><strong>${f(x.e,3)} m</strong></div>
+    <div><small>q di kaki</small><strong>${f(x.qToe,1)} kPa</strong></div>
+    <div><small>q di tumit</small><strong>${f(x.qHeel,1)} kPa</strong></div>
+  </div>`;
+  if (x.bearing) { const b = x.bearing; h += `<details ${open?'open':''}><summary>Keupayaan galas (EC7 Lampiran D, jalur, saliran)</summary><div class="tblwrap" style="margin-top:8px"><table><tbody>
+    <tr><td>Nq / Nc / Nγ</td><td class="num">${f(b.Nq,2)} / ${f(b.Nc,2)} / ${f(b.Ng,2)}</td></tr>
+    <tr><td>Faktor kecondongan iq / iγ / ic</td><td class="num">${f(b.iq,3)} / ${f(b.ig,3)} / ${f(b.ic,3)}</td></tr>
+    <tr><td>Lebar berkesan B′ = B − 2e</td><td class="num">${f(b.Bp,2)} m</td></tr>
+    <tr><td>q ult</td><td class="num">${f(b.qult,0)} kPa</td></tr>
+    <tr><td>q berkesan = N / B′</td><td class="num">${f(b.qeff,1)} kPa</td></tr>
+    <tr><td>FOS galas</td><td class="num"><b>${f(b.FSb,2)}</b></td></tr>
+  </tbody></table></div></details>`; }
+  h += `<details ${open?'open':''}><summary>Jadual daya dan momen di sekitar kaki</summary><div class="tblwrap" style="margin-top:8px"><table><thead><tr><th>Komponen</th><th class="num">Fx (kN/m)</th><th class="num">Fy (kN/m)</th><th class="num">x (m)</th><th class="num">y (m)</th><th class="num">M (kNm/m)</th></tr></thead><tbody>
+    ${x.items.map(i=>`<tr><td>${esc(i.name)}</td><td class="num">${f(i.Fx,1)}</td><td class="num">${f(i.Fy,1)}</td><td class="num">${f(i.x,2)}</td><td class="num">${f(i.y,2)}</td><td class="num">${f(i.M,1)}</td></tr>`).join('')}
+    <tr><td><b>Jumlah</b></td><td class="num"><b>${f(x.Fx,1)}</b></td><td class="num"><b>${f(x.Fy,1)}</b></td><td></td><td></td><td class="num"><b>${f(x.Mt,1)}</b></td></tr>
+  </tbody></table></div><p class="hint">M positif = menterbalikkan (lawan jam di sekitar kaki). Momen pemulih ${f(x.Mr,1)}, momen terbalik ${f(x.Mo,1)} kNm/m. Daya negatif Fy = ke bawah.</p></details>`;
+  if (RW.courses) h += `<h3>Semakan setiap aras lapis gabion</h3><div class="tblwrap"><table><thead><tr><th class="num">Aras (m)</th><th class="num">Lapis di atas</th><th class="num">Lebar (m)</th><th class="num">FOS gelongsor</th><th class="num">FOS terbalik</th><th class="num">e (m)</th><th class="num">B/6</th><th>Status</th></tr></thead><tbody>
+    ${RW.courses.map(c=>`<tr><td class="num">${f(c.level,2)}</td><td class="num">${c.above}</td><td class="num">${f(c.B,2)}</td><td class="num">${f(c.FSs,2)}</td><td class="num">${f(c.FSo,2)}</td><td class="num">${f(c.e,3)}</td><td class="num">${f(c.B6,3)}</td><td>${okPill(c.FSs>=RW.need.s && c.FSo>=RW.need.o && Math.abs(c.e)<=c.B6)}</td></tr>`).join('')}
+  </tbody></table></div>`;
+  if (RW.sections) h += `<h3>Semakan keratan dalaman</h3><div class="tblwrap"><table><thead><tr><th class="num">Aras (m)</th><th class="num">Lebar b (m)</th><th class="num">FOS gelongsor</th><th class="num">e (m)</th><th class="num">b/6</th><th class="num">σ maks (kPa)</th><th class="num">σ dibenarkan</th><th>Status</th></tr></thead><tbody>
+    ${RW.sections.map(c=>`<tr><td class="num">${f(c.level,2)}</td><td class="num">${f(c.b,2)}</td><td class="num">${f(c.FSs,2)}</td><td class="num">${f(c.e,3)}</td><td class="num">${f(c.b6,3)}</td><td class="num">${f(c.qmax,0)}</td><td class="num">${f(c.sAllow,0)}</td><td>${okPill(Math.abs(c.e)<=c.b6 && c.qmax<=c.sAllow && c.FSs>=RW.need.s)}</td></tr>`).join('')}
+  </tbody></table></div><p class="hint">e ≤ b/6 memastikan tiada tegangan pada sambungan. Gelongsor pada sambungan menggunakan sudut geseran sambungan.</p>`;
+  if (RW.rc) { const r = RW.rc; const row = (n, s) => `<tr><td>${n}</td><td class="num">${f(s.M,1)}</td><td class="num">${f(s.V,1)}</td><td class="num">${f(s.d,0)}</td><td class="num">${f(s.K,3)}</td><td class="num">${f(s.AsReq,0)}</td><td class="num">${f(s.AsMin,0)}</td><td class="num"><b>T${s.bar}@${s.s}</b></td><td class="num">${f(s.AsProv,0)}</td><td class="num">${f(s.VRdc,1)}</td><td>${okPill(s.Kok && s.Vok && s.s >= 75)}</td></tr>`;
+    h += `<h3>Rekabentuk struktur (EC2, per m)</h3><div class="tblwrap"><table><thead><tr><th>Bahagian</th><th class="num">M_Ed (kNm)</th><th class="num">V_Ed (kN)</th><th class="num">d (mm)</th><th class="num">K</th><th class="num">As perlu (mm²)</th><th class="num">As min</th><th class="num">Tetulang</th><th class="num">As sedia</th><th class="num">VRd,c (kN)</th><th>Status</th></tr></thead><tbody>
+      ${row('Batang (muka belakang)', r.stem)}${row('Tumit (muka atas)', r.heel)}${row('Kaki (muka bawah)', r.toe)}
+    </tbody></table></div>
+    <p class="hint">Tetulang agihan (melintang): sekurang-kurangnya 20% tetulang utama atau As min, pada setiap muka. Jarak bar maks 300 mm. Semak lebar retak, panjang sambungan bertindih, dan sambungan batang–tapak. Momen tumit dan kaki dikira daripada taburan tekanan galas khidmat.</p>`; }
+  if (RW.mse) { const ms = RW.mse;
+    h += `<h3>Semakan dalaman tetulang (Ka = ${f(ms.Ka,3)})</h3><div class="tblwrap"><table><thead><tr><th class="num">z (m)</th><th class="num">σv (kPa)</th><th class="num">Tmax (kN/m)</th><th class="num">La (m)</th><th class="num">Le (m)</th><th class="num">Pr (kN/m)</th><th class="num">FOS cabut</th><th class="num">Tallow/Tmax</th><th>Status</th></tr></thead><tbody>
+      ${ms.layers.map(l=>`<tr><td class="num">${f(l.z,2)}</td><td class="num">${f(l.sv,1)}</td><td class="num">${f(l.Tmax,2)}</td><td class="num">${f(l.La,2)}</td><td class="num">${f(l.Le,2)}</td><td class="num">${f(l.Pr,1)}</td><td class="num">${f(l.FSpo,2)}</td><td class="num">${f(l.FSt,2)}</td><td>${okPill(l.FSpo>=1.5 && l.FSt>=1.0)}</td></tr>`).join('')}
+    </tbody></table></div><p class="hint">Tmax = Kr·σv·Sv; Le = panjang di belakang satah Rankine (45° + φ′/2); Pr = 2·Le·γz·Ci·tanφ′ (tanpa surcaj). Had: FOS cabut ≥ 1.5, Tallow ≥ Tmax.</p>`; }
+  const Lw = +w.length || 0, vol = RW.volume || 0;
+  const mat = { gravity:'Konkrit gred rendah', rubble:'Batu-batan + mortar', gabion:'Gabion (batu isian)', rc:'Konkrit bertetulang', mse:'Timbus bertetulang', crib:'Unit crib + pengisi' }[w.type];
+  h += `<h3>Kuantiti anggaran (panjang ${f(Lw,0)} m)</h3><div class="tblwrap"><table><thead><tr><th>Perkara</th><th class="num">Per m</th><th class="num">Jumlah</th><th>Unit</th></tr></thead><tbody>
+    <tr><td>${mat}</td><td class="num">${f(vol,2)}</td><td class="num">${f(vol*Lw,1)}</td><td>m³</td></tr>
+    ${RW.rc?`<tr><td>Tetulang keluli (anggaran)</td><td class="num">${f(RW.rc.steel,0)}</td><td class="num">${f(RW.rc.steel*Lw/1000,2)}</td><td>kg/m · tan</td></tr>`:''}
+    ${RW.mse?`<tr><td>Tetulang geosintetik</td><td class="num">${f(RW.mse.layers.length*(+w.mse.L),1)}</td><td class="num">${f(RW.mse.layers.length*(+w.mse.L)*Lw,0)}</td><td>m²</td></tr>`:''}
+    <tr><td>Lubang salir / saliran belakang (geotekstil + batu)</td><td class="num">${f(RW.g.H,2)}</td><td class="num">${f(RW.g.H*Lw,0)}</td><td>m²</td></tr>
+  </tbody></table></div>
+  <div class="note"><b>Kestabilan menyeluruh.</b> Semakan di atas tidak merangkumi kegagalan gelinciran dalam melalui tanah asas. Semak menggunakan modul Analisis bulatan, terutamanya jika tembok berada di atas cerun atau tanah lembut.</div>`;
+  return h;
+}
+function wallReportHTML(){
+  const w = P.wall, st = wallStatus(), all = st.every(c => c.ok);
+  const b = w.backfill, fd = w.found;
+  return `<h4>Tembok penahan — ${WTYPES[w.type].name}</h4>
+    <div class="verdict" style="margin:0 0 8px"><b>Status:</b> ${all?'<span class="pill ok">Memenuhi kriteria</span>':'<span class="pill bad">Tidak memenuhi kriteria</span>'}</div>
+    <div class="figbox">${drawWall()}</div>
+    <p class="mini">Timbus: γ ${f(b.gamma,1)} kN/m³, φ′ ${f(b.phi,1)}°${w.type!=='sheet'?`, β ${f(b.beta,1)}°, δ/φ′ ${f(b.deltaRatio,2)}. Asas: φ′ ${f(fd.phi,1)}°, c′ ${f(fd.c,1)} kPa, D ${f(fd.D,2)} m, δb/φ′ ${f(fd.deltaRatio,2)}. Air: hw ${f(w.water.hw,2)} m`:''}. Surcaj ${f(w.loads.q,1)} kPa${w.type!=='sheet'?`, kh ${f(w.loads.kh,2)}`:''}.</p>
+    ${wallResHTML(true)}`;
+}
+function drawWall(){
+  if (!RW || RW.type !== P.wall.type) return '';
+  const w = P.wall, D2 = Math.PI/180;
+  const Wpx = 900, pad = 30;
+  let s = '', X, Y, k;
+  const frame = (x0,x1,y0,y1) => { k = (Wpx-2*pad)/(x1-x0); X = x => (pad+(x-x0)*k).toFixed(1); Y = y => (pad+(y1-y)*k).toFixed(1); return Math.round((y1-y0)*k+2*pad); };
+  const poly = (pts, fill, extra='') => `<polygon points="${pts.map(p=>`${X(p[0])},${Y(p[1])}`).join(' ')}" fill="${fill}" ${extra}/>`;
+  const line = (a, b, col, wd, extra='') => `<line x1="${X(a[0])}" y1="${Y(a[1])}" x2="${X(b[0])}" y2="${Y(b[1])}" stroke="${col}" stroke-width="${wd}" ${extra}/>`;
+  const txt = (p, t, col='var(--muted)', anchor='start', extra='') => `<text x="${X(p[0])}" y="${Y(p[1])}" fill="${col}" text-anchor="${anchor}" ${extra}>${t}</text>`;
+  const arrowL = (from, to, col) => { const ax = +X(to[0]), ay = +Y(to[1]); return line(from, to, col, 2.2) + `<path d="M${ax},${ay} l9,-5 l0,10 z" fill="${col}"/>`; };
+  const defs = `<defs><pattern id="stones" width="14" height="12" patternUnits="userSpaceOnUse"><circle cx="4" cy="4" r="3.2" fill="none" stroke="var(--ink)" stroke-opacity=".35"/><circle cx="11" cy="9" r="2.6" fill="none" stroke="var(--ink)" stroke-opacity=".35"/></pattern><pattern id="soilp" width="10" height="10" patternUnits="userSpaceOnUse"><circle cx="2" cy="3" r=".9" fill="var(--ink)" fill-opacity=".25"/><circle cx="7" cy="8" r=".9" fill="var(--ink)" fill-opacity=".25"/></pattern></defs>`;
+  const head = h => `<svg viewBox="0 0 ${Wpx} ${h}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Keratan tembok penahan" font-family="IBM Plex Mono, monospace" font-size="11">${defs}`;
+
+  if (RW.type === 'sheet') {
+    const sp = RW.sheet, H = +w.sheet.H, Dd = sp.ok ? sp.Dd : H, q = +w.loads.q, g = +w.backfill.gamma;
+    const x0 = -0.9*H - 1, x1 = 0.9*H + 1.5, y0 = -Dd - 0.8, y1 = H + 1.0;
+    const hp = frame(x0,x1,y0,y1);
+    s += head(hp);
+    s += poly([[0,y0],[x1,y0],[x1,H],[0,H]], 'var(--fill)', 'fill-opacity=".45"') + poly([[0,y0],[x1,y0],[x1,H],[0,H]], 'url(#soilp)');
+    s += poly([[x0,y0],[0,y0],[0,0],[x0,0]], 'var(--fill)', 'fill-opacity=".45"') + poly([[x0,y0],[0,y0],[0,0],[x0,0]], 'url(#soilp)');
+    if (sp.ok) {
+      const L = H + sp.D0, smax = sp.Ka*(g*L+q), pmax = sp.Kp*g*(L-H), sc = 0.7*H/Math.max(smax, pmax, 1);
+      s += poly([[0,H],[sp.Ka*q*sc,H],[smax*sc,H-L],[0,H-L]], 'var(--slip)', 'fill-opacity=".22" stroke="var(--slip)"');
+      s += poly([[0,0],[0,-sp.D0],[-pmax*sc,-sp.D0]], 'var(--accent)', 'fill-opacity=".22" stroke="var(--accent)"');
+      s += txt([smax*sc+0.1, H-L+0.2], `σa ${f(smax,0)} kPa`, 'var(--slip)');
+      s += txt([-pmax*sc-0.1, -sp.D0+0.2], `σp ${f(pmax,0)} kPa`, 'var(--accent)', 'end');
+      s += line([-0.3, H-sp.zM], [0.3, H-sp.zM], 'var(--ochre)', 1.5) + txt([0.35, H-sp.zM-0.05], `Mmax ${f(sp.Mmax,0)} kNm/m`, 'var(--ochre)');
+      s += line([x0, -sp.D0], [0, -sp.D0], 'var(--muted)', 0.8, 'stroke-dasharray="4 3"') + txt([x0+0.1, -sp.D0+0.12], `D0 = ${f(sp.D0,2)} m`);
+    }
+    s += line([0,H],[0,-Dd],'var(--steel)',4);
+    s += txt([x0+0.1, 0.12], 'Aras korekan'); s += txt([x1-0.1, H+0.15], `H = ${f(H,2)} m`, 'var(--ink)', 'end');
+    s += txt([0.15, -Dd+0.1], `Hujung: D = ${f(Dd,2)} m`, 'var(--ink)');
+    if (q > 0) for (let xa = 0.3; xa < x1-0.2; xa += Math.max(0.5,(x1-0.3)/8)) s += line([xa,H+0.45],[xa,H+0.05],'var(--ochre)',1.4);
+    return s + '</svg>';
+  }
+
+  const g = RW.g, x = RW.ext, bf = w.backfill, fd = w.found;
+  const all = g.polys.flatMap(p => p.pts);
+  const xmax = Math.max(...all.map(p=>p[0])), ymin = Math.min(0, ...all.map(p=>p[1])), H = g.H;
+  const x0 = -Math.max(1.5, 0.45*H), x1 = xmax + Math.max(2.5, 0.85*H);
+  const tb = Math.tan(bf.beta*D2), yR = g.face.B[1] + (x1 - g.face.B[0]) * tb;
+  const qsc = 0.22*H / Math.max(x.qmax, 1);
+  const y0 = ymin - 0.22*H - 0.9, y1 = Math.max(H, yR) + 0.15*H + 0.5;
+  const hp = frame(x0, x1, y0, y1);
+  s += head(hp);
+  // tanah asas, tanah hadapan, timbus
+  s += poly([[x0,y0],[x1,y0],[x1,0],[x0,0]], 'var(--fill)', 'fill-opacity=".35"') + poly([[x0,y0],[x1,y0],[x1,0],[x0,0]], 'url(#soilp)');
+  if (+fd.D > 0) s += poly([[x0,0],[xmax,0],[xmax,+fd.D],[x0,+fd.D]], 'var(--fill)', 'fill-opacity=".45"');
+  const bfPoly = [g.face.A, g.face.B, [x1, yR], [x1, 0]];
+  s += poly(bfPoly, 'var(--fill)', 'fill-opacity=".55"') + poly(bfPoly, 'url(#soilp)');
+  // tembok
+  const wf = { gravity:'var(--conc)', rubble:'var(--stone)', gabion:'var(--stone)', rc:'var(--conc)', mse:'var(--fill)', crib:'var(--conc)' }[w.type];
+  g.polys.forEach(p => {
+    if (p.kind === 'soil') { s += poly(p.pts, 'var(--fill)', 'fill-opacity=".55"') + poly(p.pts, 'url(#soilp)'); return; }
+    s += poly(p.pts, wf, 'stroke="var(--ink)" stroke-width="1.4"');
+    if (w.type === 'gabion' || w.type === 'rubble') s += poly(p.pts, 'url(#stones)');
+    if (w.type === 'mse') s += poly(p.pts, 'url(#soilp)');
+  });
+  if (w.type === 'crib') { const pts = g.polys[0].pts; for (let yy = 0.5; yy < H; yy += 0.5) { const xf = g.trap.nf*yy, xb = g.trap.Bb + (g.trap.backTop[0]-g.trap.Bb)*yy/H; s += line([xf,yy],[xb,yy],'var(--ink)',0.6,'stroke-opacity=".5"'); } }
+  // tetulang
+  if (w.type === 'rc') {
+    const c = (+w.rc.cover + 10)/1000;
+    s += `<polyline points="${[[g.xst-c, H-c],[g.xsb-c, c+0.02],[g.xsb-c+0.6, c+0.02]].map(p=>`${X(p[0])},${Y(p[1])}`).join(' ')}" fill="none" stroke="var(--steel)" stroke-width="2"/>`;
+    s += line([g.toe, g.tb-c], [g.B-c, g.tb-c], 'var(--steel)', 2) + line([c, c], [g.B-c, c], 'var(--steel)', 2, 'stroke-dasharray="7 3"');
+    s += txt([g.xsb+0.08, (g.tb+H)/2], `T${RW.rc.stem.bar}@${RW.rc.stem.s}`, 'var(--steel)');
+  }
+  if (w.type === 'mse') {
+    const m = RW.mse; m.layers.forEach(l => s += line([0, H-l.z], [g.L, H-l.z], 'var(--nail)', 1.8));
+    const t = Math.tan((45 - (+w.mse.phiR)/2)*D2);
+    s += line([0,0],[H*t,H],'var(--slip)',1.2,'stroke-dasharray="6 4"') + txt([H*t+0.1,H-0.3],'satah Rankine','var(--slip)');
+  }
+  // air
+  if (+w.water.hw > 0) { const yw = g.face.A[1] + (+w.water.hw); s += line([g.face.A[0] + (yw-g.face.A[1])*Math.tan(g.omega*D2), yw], [x1, yw], 'var(--water)', 1.8, 'stroke-dasharray="10 3 2 3"'); }
+  if (+w.water.hwf > 0) s += line([x0, +w.water.hwf], [0, +w.water.hwf], 'var(--water)', 1.8, 'stroke-dasharray="10 3 2 3"');
+  // surcaj
+  if (+w.loads.q > 0) { for (let xa = g.face.B[0] + 0.2; xa < x1 - 0.1; xa += Math.max(0.5, (x1-g.face.B[0])/7)) { const yy = g.face.B[1] + (xa-g.face.B[0])*tb; s += line([xa, yy+0.45], [xa, yy+0.05], 'var(--ochre)', 1.4); } s += txt([x1-0.1, yR+0.55], `q = ${f(w.loads.q,0)} kPa`, 'var(--ochre)', 'end'); }
+  // taburan tekanan pada muka
+  const om = Math.tan(g.omega*D2), xAt = yy => g.face.A[0] + (yy - g.face.A[1])*om;
+  const pr = x.T.prof, smax = Math.max(...pr.map(p => p.s + p.u), 1), psc = 0.3*H/smax;
+  const pp = pr.map(p => [xAt(p.y) + p.s*psc, p.y]);
+  s += poly([[xAt(g.face.B[1]), g.face.B[1]], ...pp, [xAt(g.face.A[1]), g.face.A[1]]], 'var(--slip)', 'fill-opacity=".18" stroke="var(--slip)" stroke-width="1"');
+  if (x.T.Pw > 0) s += poly([[xAt(g.face.A[1] + (+w.water.hw)), g.face.A[1] + (+w.water.hw)], ...pr.filter(p=>p.u>0).map(p => [xAt(p.y) + p.u*psc, p.y]), [xAt(g.face.A[1]), g.face.A[1]]], 'var(--water)', 'fill-opacity=".25" stroke="var(--water)"');
+  const Pa = x.T.Ps + x.T.Pq, ya = Pa ? (x.T.Ps*x.T.ys + x.T.Pq*x.T.yq)/Pa : 0;
+  s += arrowL([xAt(ya) + 0.32*H + 0.4, ya], [xAt(ya), ya], 'var(--slip)') + txt([xAt(ya) + 0.32*H + 0.5, ya + 0.08], `Pa = ${f(Pa,1)} kN/m`, 'var(--slip)', 'start', 'font-weight="600"');
+  // taburan tekanan galas
+  const a = x.alpha, n = [Math.sin(a), Math.cos(a)], heel = g.heel;
+  s += poly([[0,0], heel, [heel[0]-n[0]*x.qHeel*qsc, heel[1]-n[1]*x.qHeel*qsc], [-n[0]*x.qToe*qsc, -n[1]*x.qToe*qsc]], 'var(--accent)', 'fill-opacity=".2" stroke="var(--accent)"');
+  s += txt([0, -x.qToe*qsc - 0.25], `${f(x.qToe,0)} kPa`, 'var(--accent)', 'middle') + txt([heel[0], heel[1] - x.qHeel*qsc - 0.25], `${f(x.qHeel,0)} kPa`, 'var(--accent)', 'middle');
+  // dimensi
+  s += txt([xmax/2, y0 + 0.15], `B = ${f(x.Bw,2)} m`, 'var(--ink)', 'middle') + txt([x0 + 0.1, H - 0.1], `H = ${f(H,2)} m`, 'var(--ink)');
+  s += `<line x1="${X(x0+0.05)}" y1="${Y(0)}" x2="${X(x0+0.05)}" y2="${Y(H)}" stroke="var(--ink)" stroke-width="0.8"/>`;
+  return s + '</svg>';
 }
 
 /* ---------- Peristiwa ---------- */
@@ -1171,6 +1886,7 @@ document.addEventListener('input', e => {
 document.addEventListener('change', e => {
   const k = e.target.dataset && e.target.dataset.k;
   if (k && (k === 'nails.enabled' || k === 'water.mode')) schedule();
+  if (k === 'wall.type') { clearTimeout(timer); compute(); renderPanel(); }
 });
 document.addEventListener('click', e => {
   const t = e.target.closest('button,a'); if (!t) return;
@@ -1185,6 +1901,7 @@ document.addEventListener('click', e => {
     if (a === 'bench') { const L = P.geom.benches; const last = L[L.length-1]; if (L.length) L[L.length-1].berm = L[L.length-1].berm || +P.rules.minBerm; L.push({h:last?last.h:6, n:last?last.n:1.5, berm:0}); }
     if (a === 'soil') { const L = P.soils; const lb = L.length>1 ? +L[L.length-2].bottom : 5; L.splice(L.length-1, 0, {name:'Lapisan baharu', gamma:19, gammaSat:20, c:5, phi:30, bottom: lb - 3, color:'#b8946a', rock:false}); }
     if (a === 'wpt') { const L = P.water.points; const l = L[L.length-1]; L.push([l?+l[0]+5:0, l?+l[1]:0]); }
+    if (a === 'glayer') { const L = P.wall.gabion.layers; const l = L[L.length-1]; L.push({w: Math.max(1, +l.w - 0.5), h: 1}); }
     if (a === 'ept') { const L = P.earth.existing; const l = L[L.length-1]; L.push([l?+l[0]+5:0, l?+l[1]:0]); }
     renderPanel(); schedule(); return;
   }
