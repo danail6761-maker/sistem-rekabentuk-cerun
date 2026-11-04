@@ -4,13 +4,17 @@ const E = require('../src/engine.js');
 const p = { geom:{toeElev:25,toeExt:20,crestExt:30,benches:[{h:10,n:2,berm:0}]},
   soils:[{name:'S',gamma:20,gammaSat:20,c:3,phi:19.6,bottom:''}], water:{mode:'none'}, loads:{q:0,kh:0},
   search:{auto:true,nx:15,ny:15,nr:12,nSlices:40,minDepth:0.5,depthBelow:5} };
-const s = E.search(E.buildModel(p), p.search, null, 'bishop');
-const fb = s.best.bishop.FS.bishop;
+const s = E.search(E.buildModel(p), p.search, null, 'mp');
+const fb = s.best.bishop.FS.bishop, fmp = s.best.mp.FS.mp;
 const fi = E.infiniteFS({beta:30,c:0,phi:35,gamma:18,gammaSat:20,m:0}, 2);
 const fiRef = Math.tan(35*Math.PI/180) / Math.tan(30*Math.PI/180);
 let ok = true;
 const check = (name, v, lo, hi) => { const pass = v >= lo && v <= hi; ok = ok && pass; console.log(`${pass?'LULUS':'GAGAL'}  ${name}: ${v.toFixed(3)} (jangkaan ${lo}-${hi})`); };
 check('ACADS 1(a) Bishop', fb, 0.97, 1.01);
+check('ACADS 1(a) Morgenstern-Price (rujukan 0.986-1.00)', fmp, 0.97, 1.01);
+const pe = { ...p, search: { ...p.search, mode: 'entryexit', limAuto: true, nEx: 12, nEn: 12, nRad: 10 } };
+const se = E.search(E.buildModel(pe), pe.search, null, 'mp');
+check('ACADS 1(a) M-P, carian masuk-keluar', se.best.mp.FS.mp, 0.97, 1.01);
 check('Cerun tak terhingga kering c=0', fi, fiRef - 1e-6, fiRef + 1e-6);
 
 // Tembok penahan

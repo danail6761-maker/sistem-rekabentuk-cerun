@@ -8,7 +8,7 @@ Gunakan "Simpan .json" untuk menyimpan projek dan "Cetak laporan" untuk menyimpa
 
 ## Modul
 1. Maklumat projek  2. Geometri (tingkat, berm, semakan amalan lazim)  3. Lapisan tanah
-4. Air bumi (garis freatik / ru), surcaj, seismik kh  5. Analisis bulatan: Bishop, Fellenius, Janbu (carian grid + perhalusan)
+4. Air bumi (garis freatik / ru), surcaj, seismik kh  5. Analisis bulatan: Morgenstern–Price (f(x) separuh-sinus atau malar/Spencer), Bishop, Fellenius, Janbu; carian grid pusat atau had masuk–keluar (entry–exit), dengan pilihan had julat untuk carian grid
 6. Paku tanah (tegangan, cabut keluar, FOS bertetulang)  7. Cerun tak terhingga  8. Kerja tanah & kuantiti
 9. Tembok penahan  10. Kriteria FOS JKR (boleh ubah)  11. Laporan bercetak
 
@@ -23,7 +23,7 @@ Jenis: konkrit graviti, batu-batan (rubble), gabion, RC julur (cantilever), tana
 - Kuantiti anggaran bahan dan besi
 
 ## Pengesahan
-Penanda aras ACADS 1(a): Bishop 0.990 (rujukan 0.987–1.00), Fellenius 0.946.
+Penanda aras ACADS 1(a): Bishop 0.990, Morgenstern–Price 0.989 (rujukan 0.986–1.00), Fellenius 0.946.
 Tembok: baji cuba-jaya sepadan dengan Rankine, Coulomb tertutup dan Mononobe–Okabe; semakan tangan tembok segi empat; cerucuk julur D0/H = 0.926 (analitik). Jalankan `node tests/benchmark.js`.
 Jurutera Profesional mesti mengesahkan keputusan sebelum digunakan untuk pembinaan.
 

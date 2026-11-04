@@ -89,7 +89,7 @@ aside.fig{position:sticky;top:calc(env(safe-area-inset-top,0px) + 70px);display:
 .card .hd .sp{margin-left:auto;display:flex;gap:10px;flex-wrap:wrap}
 .figbox{overflow-x:auto}
 .figbox svg{display:block;width:100%;height:auto;min-width:420px}
-.fos{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.fos{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px}
 .fos div{background:var(--sunk);border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-width:0}
 .fos div.prim{border-color:var(--accent)}
 .fos small{display:block;color:var(--muted);font-size:11.5px;letter-spacing:.04em;text-transform:uppercase}
@@ -355,9 +355,79 @@ details{margin-top:12px} summary{cursor:pointer;font-weight:600;font-size:13px;c
     return out;
   }
 
+  /* Morgenstern–Price (GLE) untuk permukaan bulatan.
+     Keseimbangan momen (sekitar pusat) dan daya mendatar dipenuhi serentak;
+     ricih antara hirisan X = λ·f(x)·E. fType: 'halfsine' atau 'constant' (= Spencer). */
+  function morgensternPrice(sl, xc, yc, R, kh, nf, fType, Fguess) {
+    const n = sl.length;
+    const xb = [sl[0].xm - sl[0].b / 2];
+    sl.forEach(s => xb.push(xb[xb.length - 1] + s.b));
+    const xL = xb[0], xR = xb[n];
+    const fb = xb.map(x => fType === 'constant' ? 1 : Math.sin(Math.PI * (x - xL) / (xR - xL)));
+    const Pq = sl.map(s => {
+      const ca = Math.cos(s.alpha), l = s.b / ca;
+      return { W: s.W, Ws: s.Ws, sa: Math.sin(s.alpha), ca, tp: Math.tan(s.phi * D2R), cl: s.c * l, ul: s.u * l,
+        dx: s.xm - xc, dyg: yc - s.yg, Tx: 0, Ty: 0, Mn: 0, xm: s.xm, b: s.b };
+    });
+    (nf || []).forEach(t => {
+      const q = Pq.find(q => Math.abs(q.xm - t.xi) <= q.b / 2 + 1e-9) || Pq[Pq.length - 1];
+      const Tx = t.T * Math.cos(t.theta), Ty = -t.T * Math.sin(t.theta);
+      q.Tx += Tx; q.Ty += Ty; q.Mn += (t.xi - xc) * Ty - (t.yi - yc) * Tx;
+    });
+    let Md = 0;
+    Pq.forEach(q => { Md += q.W * q.dx + kh * q.Ws * q.dyg - q.Mn; });
+    if (!(Md > 1e-6)) return null;
+    const Nof = (q, dX, F) => (q.W - q.Ty + dX - (q.cl - q.ul * q.tp) * q.sa / F) / Math.max(q.ca + q.sa * q.tp / F, 0.2);
+    const Sres = (q, N) => q.cl + Math.max(0, N - q.ul) * q.tp;
+    const solve = lam => {
+      let X = new Array(n + 1).fill(0), Fm = Fguess, Ff = Fguess, E = new Array(n + 1).fill(0);
+      for (let k = 0; k < 60; k++) {
+        const dX = i => X[i + 1] - X[i];
+        let F = Fm;
+        for (let it = 0; it < 40; it++) {
+          let num = 0; for (let i = 0; i < n; i++) num += Sres(Pq[i], Nof(Pq[i], dX(i), F));
+          const Fn = R * num / Md; if (Math.abs(Fn - F) < 1e-6) { F = Fn; break; } F = Fn;
+        }
+        const FmN = F; F = Ff;
+        for (let it = 0; it < 40; it++) {
+          let num = 0, den = 0;
+          for (let i = 0; i < n; i++) { const q = Pq[i], N = Nof(q, dX(i), F); num += Sres(q, N) * q.ca; den += N * q.sa + kh * q.Ws - q.Tx; }
+          if (!(den > 1e-9)) return null;
+          const Fn = num / den; if (Math.abs(Fn - F) < 1e-6) { F = Fn; break; } F = Fn;
+        }
+        const FfN = F;
+        if (!isFinite(FmN) || !isFinite(FfN) || FmN <= 0 || FfN <= 0) return null;
+        E[0] = 0;
+        for (let i = 0; i < n; i++) { const q = Pq[i], N = Nof(q, dX(i), FfN); E[i + 1] = E[i] - N * q.sa + Sres(q, N) / FfN * q.ca - kh * q.Ws + q.Tx; }
+        const Xn = E.map((e, i) => (i === 0 || i === n) ? 0 : lam * fb[i] * e);
+        const conv = Math.abs(FmN - Fm) < 1e-5 && Math.abs(FfN - Ff) < 1e-5 && k > 1;
+        X = X.map((x, i) => 0.5 * x + 0.5 * Xn[i]); Fm = FmN; Ff = FfN;
+        if (conv) break;
+      }
+      return { Fm, Ff, E, X };
+    };
+    let l0 = 0, r0 = solve(l0); if (!r0) return null;
+    let l1 = 0.3, r1 = solve(l1); if (!r1) return null;
+    let g0 = r0.Fm - r0.Ff, g1 = r1.Fm - r1.Ff;
+    for (let it = 0; it < 40; it++) {
+      if (Math.abs(g1) < 1e-4) break;
+      if (Math.abs(g1 - g0) < 1e-12) return null;
+      let l2 = l1 - g1 * (l1 - l0) / (g1 - g0);
+      l2 = Math.max(-4, Math.min(4, l2));
+      const r2 = solve(l2); if (!r2) return null;
+      l0 = l1; g0 = g1; l1 = l2; r1 = r2; g1 = r2.Fm - r2.Ff;
+    }
+    if (Math.abs(g1) > 1e-3 || Math.abs(l1) >= 4) return null;
+    return { F: (r1.Fm + r1.Ff) / 2, lambda: l1, E: r1.E, X: r1.X, fType };
+  }
+
   function analyseCircle(m, xc, yc, R, opt) {
     const arc = findArc(m, xc, yc, R);
     if (!arc) return null;
+    if (opt.limits) { // had kawasan masuk/keluar
+      const L = opt.limits, tol = 0.25;
+      if (arc.xL < L.ex1 - tol || arc.xL > L.ex2 + tol || arc.xR < L.en1 - tol || arc.xR > L.en2 + tol) return null;
+    }
     const { slices, maxDepth } = makeSlices(m, xc, yc, R, arc.xL, arc.xR, opt.nSlices || 30);
     if (maxDepth < (opt.minDepth || 0.3)) return null;
     if (slices.some(s => s.rock)) return null;
@@ -426,6 +496,13 @@ details{margin-top:12px} summary{cursor:pointer;font-weight:600;font-size:13px;c
       res.FS.janbu = Fj;
       res.f0 = f0;
     } else res.FS.janbu = NaN;
+    // Morgenstern–Price: dikira jika diminta (opt.mp === true) atau jika Bishop menghampiri minimum semasa
+    res.FS.mp = NaN;
+    const wantMP = opt.mp === true || (typeof opt.mp === 'function' && opt.mp(res.FS.bishop));
+    if (wantMP) {
+      const mp = morgensternPrice(slices, xc, yc, R, kh, nf, opt.mpFn || 'halfsine', Math.max(res.FS.bishop, 0.3));
+      if (mp) { res.FS.mp = mp.F; res.mp = mp; }
+    }
     return res;
   }
 
@@ -445,17 +522,21 @@ details{margin-top:12px} summary{cursor:pointer;font-weight:600;font-size:13px;c
     const nx = Math.max(3, +s.nx || 12), ny = Math.max(3, +s.ny || 12), nr = Math.max(3, +s.nr || 10);
     const P = m.prof, H = Math.max(P.H, 1);
     const yLow = P.yToe - (+s.depthBelow >= 0 ? +s.depthBelow : 0.5 * H);
-    const opt = { nSlices: +s.nSlices || 30, minDepth: +s.minDepth || 0.5, nails };
+    const limits = (s.mode === 'entryexit' || s.useLimits) ? limitsOf(m, s) : null;
+    const opt = { nSlices: +s.nSlices || 30, minDepth: +s.minDepth || 0.5, nails, limits, mpFn: s.mpFn || 'halfsine' };
     const best = {}, trials = [];
     let count = 0;
+    // M-P dikira untuk bulatan yang Bishopnya dalam 15% daripada minimum semasa (jimat masa, hasil sama)
+    opt.mp = fb => !best.bishop || fb <= best.bishop.FS.bishop * 1.05;
     const consider = r => {
       count++;
-      ['fellenius', 'bishop', 'janbu'].forEach(k => {
+      ['fellenius', 'bishop', 'janbu', 'mp'].forEach(k => {
         const v = r.FS[k];
         if (isFinite(v) && v > 0 && (!best[k] || v < best[k].FS[k])) best[k] = r;
       });
     };
     const centreMin = [];
+    if (s.mode === 'entryexit') return searchEntryExit(m, s, opt, limits, best, consider, trials, primary, () => count);
     const tryCentre = (xc, yc, nR, record) => {
       let cmin = Infinity;
       const yTopTan = P.yCrest - opt.minDepth * 0.5;
@@ -466,8 +547,9 @@ details{margin-top:12px} summary{cursor:pointer;font-weight:600;font-size:13px;c
         const r = analyseCircle(m, xc, yc, R, opt);
         if (!r) continue;
         consider(r);
-        if (record) trials.push({ xc, yc, R, F: r.FS[primary] });
-        if (r.FS[primary] < cmin) cmin = r.FS[primary];
+        const fp = isFinite(r.FS[primary]) ? r.FS[primary] : r.FS.bishop;
+        if (record) trials.push({ xc, yc, R, F: fp });
+        if (fp < cmin) cmin = fp;
       }
       return cmin;
     };
@@ -479,15 +561,62 @@ details{margin-top:12px} summary{cursor:pointer;font-weight:600;font-size:13px;c
     }
     // perhalusan di sekitar pusat terbaik
     let dx = (g.x2 - g.x1) / (nx - 1), dy = (g.y2 - g.y1) / (ny - 1);
-    for (let pass = 0; pass < 2 && best[primary]; pass++) {
-      const c = best[primary];
+    const refKey = best[primary] ? primary : 'bishop';
+    for (let pass = 0; pass < 2 && best[refKey]; pass++) {
+      const c = best[refKey];
       for (let i = -3; i <= 3; i++) for (let j = -3; j <= 3; j++) {
         tryCentre(c.xc + i * dx / 3, c.yc + j * dy / 3, nr * 2, false);
       }
       dx /= 3; dy /= 3;
     }
     trials.sort((a, b) => a.F - b.F);
-    return { best, grid: g, centreMin, top: trials.slice(0, 12), count };
+    return { best, grid: g, centreMin, top: trials.slice(0, 12), count, limits, mode: 'grid' };
+  }
+
+  /* Had masuk (entry, di belakang puncak) dan keluar (exit, sekitar kaki) */
+  function limitsOf(m, s) {
+    const P = m.prof, H = Math.max(P.H, 1), W = Math.max(P.xCrest - P.xToe, 1);
+    const cl = v => Math.max(P.xMin, Math.min(P.xMax, v));
+    const auto = !!s.limAuto;
+    const raw = auto ? [P.xToe - 0.25 * H, P.xToe + 0.3 * W, P.xCrest - 0.15 * W, P.xCrest + 0.8 * H]
+                     : [+s.ex1, +s.ex2, +s.en1, +s.en2];
+    const L = { ex1: cl(Math.min(raw[0], raw[1])), ex2: cl(Math.max(raw[0], raw[1])),
+                en1: cl(Math.min(raw[2], raw[3])), en2: cl(Math.max(raw[2], raw[3])) };
+    return L;
+  }
+  // Carian masuk–keluar: bulatan melalui titik keluar dan titik masuk, dengan jejari berbeza
+  function searchEntryExit(m, s, opt, L, best, consider, trials, primary, getCount) {
+    const nEx = Math.max(2, +s.nEx || 10), nEn = Math.max(2, +s.nEn || 10), nRad = Math.max(2, +s.nRad || 8);
+    const tryPair = (xe, xn, nr, record) => {
+      if (xn - xe < 1) return;
+      const ye = ySurf(m, xe), yn = ySurf(m, xn);
+      const vx = xn - xe, vy = yn - ye, c = Math.hypot(vx, vy) / 2;
+      const ux = -vy / (2 * c), uy = vx / (2 * c); // normal ke atas
+      const Mx = (xe + xn) / 2, My = (ye + yn) / 2;
+      for (let k = 1; k <= nr; k++) {
+        const d = c * (0.06 + 0.94 * k / nr); // anak panah (sagitta) lengkok
+        const R = (c * c + d * d) / (2 * d);
+        const xc = Mx + ux * (R - d), yc = My + uy * (R - d);
+        const r = analyseCircle(m, xc, yc, R, opt);
+        if (!r) continue;
+        consider(r);
+        if (record) trials.push({ xc, yc, R, F: isFinite(r.FS[primary]) ? r.FS[primary] : r.FS.bishop, xe, xn });
+      }
+    };
+    const pts = (a, b, n) => Array.from({ length: n }, (_, i) => a + (b - a) * i / (n - 1));
+    pts(L.ex1, L.ex2, nEx).forEach(xe => pts(L.en1, L.en2, nEn).forEach(xn => tryPair(xe, xn, nRad, true)));
+    let de = (L.ex2 - L.ex1) / (nEx - 1), dn = (L.en2 - L.en1) / (nEn - 1);
+    const refKey = best[primary] ? primary : 'bishop';
+    for (let pass = 0; pass < 2 && best[refKey]; pass++) {
+      const c = best[refKey];
+      for (let i = -2; i <= 2; i++) for (let j = -2; j <= 2; j++) {
+        const xe = Math.max(L.ex1, Math.min(L.ex2, c.xL + i * de / 2)), xn = Math.max(L.en1, Math.min(L.en2, c.xR + j * dn / 2));
+        tryPair(xe, xn, nRad * 2, false);
+      }
+      de /= 2; dn /= 2;
+    }
+    trials.sort((a, b) => a.F - b.F);
+    return { best, grid: null, centreMin: [], top: trials.slice(0, 12), count: getCount(), limits: L, mode: 'entryexit' };
   }
 
   /* ---------------- Paku tanah ---------------- */
@@ -611,7 +740,7 @@ details{margin-top:12px} summary{cursor:pointer;font-weight:600;font-size:13px;c
   }
 
   const API = { buildProfile, buildModel, interp, ySurf, yWater, soilAt, analyseCircle, search,
-    nailLayout, nailForces, infiniteAnalysis, infiniteFS, earthworks, geometryChecks, requiredFS, runAll, findArc };
+    nailLayout, nailForces, morgensternPrice, limitsOf, infiniteAnalysis, infiniteFS, earthworks, geometryChecks, requiredFS, runAll, findArc };
   if (typeof module !== 'undefined' && module.exports) module.exports = API;
   else root.SlopeEngine = API;
 })(this);
@@ -1017,7 +1146,8 @@ let RW = null; // keputusan tembok
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const f = (v, d=2) => (v==null || !isFinite(v)) ? '—' : (+v).toFixed(d);
-const METH = { bishop:'Bishop Dipermudah', fellenius:'Fellenius (OMS)', janbu:'Janbu Dipermudah' };
+const METH = { mp:'Morgenstern–Price', bishop:'Bishop Dipermudah', fellenius:'Fellenius (OMS)', janbu:'Janbu Dipermudah' };
+const MKEYS = Object.keys(METH);
 const STORE = 'rekabentuk-cerun-v1';
 const standalone = (() => { try { return window.self === window.top; } catch(e){ return false; } })();
 
@@ -1035,8 +1165,9 @@ function sample(){
     ],
     water:{ mode:'line', ru:0.2, gammaW:9.81, points:[[-10,0.5],[0,1],[12,6],[24,10.5],[46,12]] },
     loads:{ q:10, qOffset:1, qWidth:6, kh:0 },
-    methods:{ primary:'bishop' },
-    search:{ auto:true, nx:12, ny:12, nr:10, nSlices:30, minDepth:1.0, depthBelow:6, x1:-5, x2:30, y1:20, y2:45 },
+    methods:{ primary:'mp' },
+    search:{ auto:true, nx:12, ny:12, nr:10, nSlices:30, minDepth:1.0, depthBelow:6, x1:-5, x2:30, y1:20, y2:45,
+      mode:'grid', useLimits:false, limAuto:false, ex1:-4, ex2:6, en1:28, en2:44, nEx:10, nEn:10, nRad:8, mpFn:'halfsine' },
     nails:{ enabled:true, L:10, theta:20, Sh:1.5, Sv:1.5, firstDepth:1.0, barDia:25, fy:460, holeDia:100, qs:60, corrosion:2, FSt:1.5, FSp:2.0 },
     infinite:{ beta:33.7, z:1.2, c:7, phi:30, gamma:18.5, gammaSat:19.5, m:0.2, kh:0, target:1.4 },
     earth:{ length:100, fillFactor:1.1, existing:[[-10,0],[0,0.4],[12,8.5],[25,16.5],[38,21.5],[46,23]] },
@@ -1057,6 +1188,12 @@ function sample(){
       fos:{ sl:1.5, ot:2.0, br:3.0, sSl:1.1, sOt:1.5, sBr:2.0, eRock:false } },
   };
 }
+function mergeDefaults(o){
+  const d = sample(), out = Object.assign(d, o);
+  Object.keys(sample()).forEach(k => { const dv = sample()[k]; if (dv && typeof dv === 'object' && !Array.isArray(dv) && o && o[k] && typeof o[k] === 'object') out[k] = Object.assign(dv, o[k]); });
+  if (out.wall) ['backfill','found','water','loads','passive','fos','gravity','rubble','crib','gabion','rc','mse','sheet'].forEach(k => { out.wall[k] = Object.assign(sample().wall[k], (o.wall||{})[k] || {}); });
+  return out;
+}
 function blank(){
   const p = sample();
   p.info = { name:'Projek baharu', client:'', location:'', chainage:'', engineer:'', checker:'', ref:'', date:new Date().toISOString().slice(0,10), notes:'' };
@@ -1065,7 +1202,7 @@ function blank(){
 
 let P;
 try { const s = localStorage.getItem(STORE); P = s ? JSON.parse(s) : sample(); } catch(e){ P = sample(); }
-P = Object.assign(sample(), P);
+P = mergeDefaults(P);
 let R = null; // keputusan
 const VIEW = { slices:true, top:false, grid:false, rein:true };
 
@@ -1196,24 +1333,40 @@ air: () => `
   <div class="fields">${fld('loads.kh','Pekali mendatar kh','')}</div>
   <p class="hint">Bila kh &gt; 0, FOS minimum yang digunakan ialah nilai seismik dalam Kriteria JKR.</p>`,
 
-analisis: () => `
+analisis: () => { const S = P.search, ee = S.mode === 'entryexit'; return `
   <h2>Analisis bulatan</h2>
-  <p class="lede">Kaedah keseimbangan had dengan carian grid pusat dan jejari, diikuti perhalusan di sekitar pusat paling kritikal. Ketiga-tiga kaedah dikira bagi setiap bulatan.</p>
+  <p class="lede">Kaedah keseimbangan had untuk permukaan gelinciran bulatan: Morgenstern–Price (keseimbangan daya dan momen penuh), Bishop Dipermudah, Fellenius dan Janbu. Carian menggunakan grid pusat atau julat masuk–keluar, diikuti perhalusan di sekitar bulatan paling kritikal.</p>
   <div class="fields">
     ${fld('methods.primary','Kaedah utama (untuk pematuhan)','',{type:'select',options:Object.entries(METH)})}
+    ${fld('search.mpFn','Fungsi daya antara hirisan f(x) (M–P)','',{type:'select',options:[['halfsine','Separuh-sinus'],['constant','Malar (Spencer)']]})}
     ${fld('search.nSlices','Bilangan hirisan','')}
     ${fld('search.minDepth','Kedalaman gelincir minimum','m')}
     ${fld('search.depthBelow','Had dalam bawah kaki','m')}
   </div>
-  <h3>Grid pusat</h3>
+  <p class="hint">Morgenstern–Price: ricih antara hirisan X = λ·f(x)·E; λ dan FOS dicari supaya keseimbangan momen dan daya dipenuhi serentak. Untuk bulatan, nilainya biasanya hampir sama dengan Bishop (±2%).</p>
+  <h3>Kaedah carian</h3>
+  <div class="fields">
+    ${fld('search.mode','Kaedah carian permukaan','',{type:'select',options:[['grid','Grid pusat & jejari'],['entryexit','Had masuk & keluar (entry–exit)']]})}
+    ${!ee ? fld('search.useLimits','Hadkan kepada julat masuk/keluar','',{type:'check'}) : ''}
+  </div>
+  ${ee || S.useLimits ? `
+  <h3>Julat masuk & keluar</h3>
+  <div class="fields">
+    ${fld('search.ex1','Keluar (kaki): x dari','m')}${fld('search.ex2','Keluar (kaki): x hingga','m')}
+    ${fld('search.en1','Masuk (puncak): x dari','m')}${fld('search.en2','Masuk (puncak): x hingga','m')}
+    ${ee ? fld('search.nEx','Bahagian julat keluar','')+fld('search.nEn','Bahagian julat masuk','')+fld('search.nRad','Jejari setiap pasangan','') : ''}
+  </div>
+  <div class="rowbtns"><button data-act="autoLimits">Isi julat automatik daripada geometri</button></div>
+  <p class="hint">Julat keluar ialah kawasan di sekitar kaki cerun tempat permukaan gelinciran keluar. Julat masuk ialah kawasan di puncak atau belakang puncak tempat permukaan bermula. ${ee ? 'Bulatan dibina melalui setiap pasangan titik keluar–masuk dengan beberapa jejari.' : 'Bulatan grid yang keluar atau masuk di luar julat ditolak.'} Julat ditunjukkan pada keratan rentas.</p>` : ''}
+  ${!ee ? `<h3>Grid pusat</h3>
   <div class="fields">
     ${fld('search.auto','Grid automatik','',{type:'check'})}
     ${fld('search.nx','Bilangan x','')}${fld('search.ny','Bilangan y','')}${fld('search.nr','Jejari setiap pusat','')}
     ${fld('search.x1','x min','m')}${fld('search.x2','x max','m')}${fld('search.y1','y min','m')}${fld('search.y2','y max','m')}
   </div>
-  <p class="hint">Grid automatik meliputi kawasan dari 0.3W di kiri kaki hingga 0.15W di kanan puncak, dan 0.15H–1.6H di atas puncak. Jika pusat kritikal berada di tepi grid, besarkan grid secara manual.</p>
+  <p class="hint">Grid automatik meliputi kawasan dari 0.3W di kiri kaki hingga 0.15W di kanan puncak, dan 0.15H–1.6H di atas puncak. Jika pusat kritikal berada di tepi grid, besarkan grid secara manual.</p>` : ''}
   <h3>Keputusan</h3>
-  <div id="anaRes"></div>`,
+  <div id="anaRes"></div>`; },
 
 paku: () => `
   <h2>Paku tanah</h2>
@@ -1360,7 +1513,7 @@ function drawSection(opts={}){
   let y0 = pr.yToe - Math.max(+P.search.depthBelow || 0, 0.25*H) - 1;
   let y1 = Math.max(pr.yCrest, ...ex.map(q=>q[1])) + 0.25*H;
   if (opts.showCentre !== false && crit) y1 = Math.max(y1, Math.min(crit.yc + 1, pr.yCrest + 2.2*H));
-  if (VIEW.grid && !opts.report) y1 = Math.max(y1, S.grid.y2 + 1);
+  if (VIEW.grid && !opts.report && S.grid) y1 = Math.max(y1, S.grid.y2 + 1);
   const Wpx = 900, pad = 34, k = (Wpx - 2*pad) / (x1 - x0);
   const Hpx = Math.round((y1 - y0) * k + 2*pad);
   const X = x => (pad + (x - x0) * k).toFixed(1), Y = y => (pad + (y1 - y) * k).toFixed(1);
@@ -1414,6 +1567,16 @@ function drawSection(opts={}){
     const fin = S.centreMin.filter(c=>isFinite(c.F)); const lo = Math.min(...fin.map(c=>c.F)), hi = Math.max(...fin.map(c=>c.F));
     S.centreMin.forEach(c => { if (!isFinite(c.F)) return; const t = hi>lo ? (c.F-lo)/(hi-lo) : 0; s += `<circle cx="${X(c.xc)}" cy="${Y(c.yc)}" r="3" fill="var(--slip)" fill-opacity="${(1-t)*0.85+0.1}"/>`; });
   }
+  // julat masuk / keluar
+  if (S.limits) {
+    const Lm = S.limits, seg = (a, b, col, lbl) => {
+      const pts = []; for (let i = 0; i <= 20; i++) { const xx = a + (b - a) * i / 20; pts.push(`${X(xx)},${+Y(E.ySurf(m, xx)) - 5}`); }
+      return `<polyline points="${pts.join(' ')}" fill="none" stroke="${col}" stroke-width="5" stroke-linecap="round" stroke-opacity=".85"/>`
+        + `<line x1="${X(a)}" y1="${+Y(E.ySurf(m,a))-12}" x2="${X(a)}" y2="${+Y(E.ySurf(m,a))+2}" stroke="${col}" stroke-width="2"/><line x1="${X(b)}" y1="${+Y(E.ySurf(m,b))-12}" x2="${X(b)}" y2="${+Y(E.ySurf(m,b))+2}" stroke="${col}" stroke-width="2"/>`
+        + `<text x="${X((a+b)/2)}" y="${+Y(E.ySurf(m,(a+b)/2))+16}" text-anchor="middle" fill="${col}" font-weight="600">${lbl}</text>`;
+    };
+    s += seg(Lm.ex1, Lm.ex2, 'var(--accent)', 'KELUAR') + seg(Lm.en1, Lm.en2, 'var(--ochre)', 'MASUK');
+  }
   // bulatan terendah
   if (VIEW.top && !opts.report) S.top.slice(0,10).forEach(c => { const r = E.findArc(m, c.xc, c.yc, c.R); if (r) s += arc(c.xc,c.yc,c.R,r.xL,r.xR,X,Y,k,'var(--muted)',1,0.6); });
   // bulatan kritikal
@@ -1451,7 +1614,7 @@ function legendHTML(){
 /* ---------- Ringkasan ---------- */
 function pass(v, req){ return !isFinite(v) ? '<span class="pill na">Tiada</span>' : v >= req ? '<span class="pill ok">Lulus</span>' : '<span class="pill bad">Gagal</span>'; }
 function fosGrid(S){
-  return `<div class="fos">${['bishop','fellenius','janbu'].map(k => { const b = S && S.best[k]; return `<div class="${k===R.primary?'prim':''}"><small>${METH[k]}</small><strong>${b?f(b.FS[k],3):'—'}</strong></div>`; }).join('')}</div>`;
+  return `<div class="fos">${MKEYS.map(k => { const b = S && S.best[k]; return `<div class="${k===R.primary?'prim':''}"><small>${METH[k]}</small><strong>${b?f(b.FS[k],3):'—'}</strong></div>`; }).join('')}</div>`;
 }
 function summaryHTML(){
   if (!R) return '<p>Ralat pengiraan. Semak input.</p>';
@@ -1499,20 +1662,30 @@ function updateOutputs(){
 
 function critTable(S, req){
   return `<div class="tblwrap"><table><thead><tr><th>Kaedah</th><th class="num">FOS min</th><th class="num">xc</th><th class="num">yc</th><th class="num">R</th><th class="num">Dalam maks</th><th>Status</th></tr></thead><tbody>
-  ${['bishop','fellenius','janbu'].map(k=>{ const b = S.best[k]; return b ? `<tr><td>${METH[k]}${k===R.primary?' <span class="pill na">utama</span>':''}</td><td class="num"><b>${f(b.FS[k],3)}</b></td><td class="num">${f(b.xc)}</td><td class="num">${f(b.yc)}</td><td class="num">${f(b.R)}</td><td class="num">${f(b.maxDepth)} m</td><td>${pass(b.FS[k],req)}</td></tr>` : `<tr><td>${METH[k]}</td><td colspan="6">Tiada bulatan sah ditemui</td></tr>`; }).join('')}
+  ${MKEYS.map(k=>{ const b = S.best[k]; return b ? `<tr><td>${METH[k]}${k===R.primary?' <span class="pill na">utama</span>':''}</td><td class="num"><b>${f(b.FS[k],3)}</b></td><td class="num">${f(b.xc)}</td><td class="num">${f(b.yc)}</td><td class="num">${f(b.R)}</td><td class="num">${f(b.maxDepth)} m</td><td>${pass(b.FS[k],req)}</td></tr>` : `<tr><td>${METH[k]}</td><td colspan="6">Tiada bulatan sah ditemui</td></tr>`; }).join('')}
   </tbody></table></div>`;
 }
 function anaHTML(req){
   const S = R.unrein, b = S.best[R.primary];
   if (!b) return `<div class="note"><b>Tiada bulatan sah.</b> Besarkan grid pusat, kurangkan kedalaman minimum, atau semak geometri.</div>`;
-  const g = S.grid, edge = Math.abs(b.xc-g.x1)<1e-6||Math.abs(b.xc-g.x2)<1e-6||Math.abs(b.yc-g.y1)<1e-6||Math.abs(b.yc-g.y2)<1e-6;
+  const g = S.grid, edge = g ? (Math.abs(b.xc-g.x1)<1e-6||Math.abs(b.xc-g.x2)<1e-6||Math.abs(b.yc-g.y1)<1e-6||Math.abs(b.yc-g.y2)<1e-6) : false;
+  const Lm = S.limits, atLim = Lm ? (Math.abs(b.xL-Lm.ex1)<0.3||Math.abs(b.xL-Lm.ex2)<0.3||Math.abs(b.xR-Lm.en1)<0.3||Math.abs(b.xR-Lm.en2)<0.3) : false;
+  const mpi = (S.best.mp && S.best.mp.mp) ? S.best.mp.mp : null;
   return `${critTable(S, req)}
+  <div class="kv" style="margin-top:12px">
+    <div><small>Kaedah carian</small><strong style="font-size:14px">${S.mode==='entryexit'?'Masuk–keluar':'Grid pusat'}${S.mode!=='entryexit'&&Lm?' + had':''}</strong></div>
+    <div><small>Bulatan dianalisis</small><strong>${S.count}</strong></div>
+    ${mpi?`<div><small>M–P: λ</small><strong>${f(mpi.lambda,3)}</strong></div><div><small>M–P: f(x)</small><strong style="font-size:14px">${mpi.fType==='constant'?'Malar (Spencer)':'Separuh-sinus'}</strong></div>`:''}
+    <div><small>Titik keluar x</small><strong>${f(b.xL,2)} m</strong></div><div><small>Titik masuk x</small><strong>${f(b.xR,2)} m</strong></div>
+  </div>
+  ${!S.best.mp?'<div class="note"><b>Morgenstern–Price tidak menumpu</b> bagi bulatan yang dikaji. Semak geometri, atau gunakan Bishop sebagai kaedah utama.</div>':''}
   ${edge?'<div class="note"><b>Pusat kritikal di tepi grid.</b> FOS sebenar mungkin lebih rendah. Besarkan julat grid.</div>':''}
+  ${atLim?'<div class="note"><b>Permukaan kritikal berada di hujung julat masuk/keluar.</b> FOS sebenar mungkin lebih rendah di luar julat. Pertimbangkan untuk meluaskan julat.</div>':''}
   ${b.FS[R.primary] < req ? `<div class="note"><b>Tidak memenuhi FOS ${f(req,2)}.</b> Pertimbangkan cerun lebih landai, berm lebih lebar, sistem saliran untuk menurunkan air bumi, atau paku tanah (modul 06).</div>` : ''}
   <details><summary>Jadual hirisan bulatan kritikal (${METH[R.primary]}, ${b.slices.length} hirisan)</summary>
   <div class="rowbtns noprint"><button data-act="copySlices">Salin jadual (CSV)</button></div>
-  <div class="tblwrap" style="margin-top:8px;max-height:360px;overflow:auto"><table><thead><tr><th class="num">#</th><th class="num">x (m)</th><th class="num">b (m)</th><th class="num">h (m)</th><th class="num">α (°)</th><th class="num">W (kN/m)</th><th class="num">u (kPa)</th><th class="num">c′</th><th class="num">φ′</th><th>Lapisan dasar</th></tr></thead><tbody>
-  ${b.slices.map((s,i)=>`<tr><td class="num">${i+1}</td><td class="num">${f(s.xm)}</td><td class="num">${f(s.b,3)}</td><td class="num">${f(s.h)}</td><td class="num">${f(s.alpha*180/Math.PI,1)}</td><td class="num">${f(s.W,1)}</td><td class="num">${f(s.u,1)}</td><td class="num">${f(s.c,1)}</td><td class="num">${f(s.phi,1)}</td><td>${esc(s.soil)}</td></tr>`).join('')}
+  <div class="tblwrap" style="margin-top:8px;max-height:360px;overflow:auto"><table><thead><tr><th class="num">#</th><th class="num">x (m)</th><th class="num">b (m)</th><th class="num">h (m)</th><th class="num">α (°)</th><th class="num">W (kN/m)</th><th class="num">u (kPa)</th><th class="num">c′</th><th class="num">φ′</th>${b.mp?'<th class="num">E kanan (kN/m)</th><th class="num">X kanan (kN/m)</th>':''}<th>Lapisan dasar</th></tr></thead><tbody>
+  ${b.slices.map((s,i)=>`<tr><td class="num">${i+1}</td><td class="num">${f(s.xm)}</td><td class="num">${f(s.b,3)}</td><td class="num">${f(s.h)}</td><td class="num">${f(s.alpha*180/Math.PI,1)}</td><td class="num">${f(s.W,1)}</td><td class="num">${f(s.u,1)}</td><td class="num">${f(s.c,1)}</td><td class="num">${f(s.phi,1)}</td>${b.mp?`<td class="num">${f(b.mp.E[i+1],1)}</td><td class="num">${f(b.mp.X[i+1],1)}</td>`:''}<td>${esc(s.soil)}</td></tr>`).join('')}
   </tbody></table></div></details>
   <p class="hint">Janbu: faktor pembetulan f0 = ${f(b.f0,3)}. Tekanan air luaran di kaki cerun (air bertakung) tidak dimodelkan.</p>`;
 }
@@ -1606,6 +1779,7 @@ function reportHTML(){
       <tr><td>FOS minimum</td><td><b>${f(req,2)}</b></td></tr>
     </tbody></table></div>
     <h4>5. Analisis kestabilan menyeluruh — tanpa paku</h4>
+    <p class="mini">Kaedah utama: ${METH[R.primary]}${R.primary==='mp'?' (f(x) '+(P.search.mpFn==='constant'?'malar':'separuh-sinus')+(R.unrein.best.mp&&R.unrein.best.mp.mp?', λ = '+f(R.unrein.best.mp.mp.lambda,3):'')+')':''}. Carian: ${P.search.mode==='entryexit'?'had masuk–keluar':'grid pusat'}${R.unrein.limits?` — keluar x = ${f(R.unrein.limits.ex1,1)} hingga ${f(R.unrein.limits.ex2,1)} m, masuk x = ${f(R.unrein.limits.en1,1)} hingga ${f(R.unrein.limits.en2,1)} m`:''}; ${R.unrein.count} bulatan.</p>
     ${critTable(R.unrein, req)}
     ${R.rein?`<h4>6. Analisis dengan paku tanah</h4>
     <p class="mini">${R.nl.rows.length} baris; L = ${f(P.nails.L,1)} m; θ = ${f(P.nails.theta,0)}°; Sh × Sv = ${f(P.nails.Sh,2)} × ${f(P.nails.Sv,2)} m; bar Ø${f(P.nails.barDia,0)} mm (fy ${f(P.nails.fy,0)} MPa, elaun karat ${f(P.nails.corrosion,1)} mm); lubang Ø${f(P.nails.holeDia,0)} mm; qs = ${f(P.nails.qs,0)} kPa; FOS tegangan ${f(P.nails.FSt,2)}, cabut keluar ${f(P.nails.FSp,2)}.</p>
@@ -1886,6 +2060,7 @@ document.addEventListener('input', e => {
 document.addEventListener('change', e => {
   const k = e.target.dataset && e.target.dataset.k;
   if (k && (k === 'nails.enabled' || k === 'water.mode')) schedule();
+  if (k === 'search.mode' || k === 'search.useLimits') renderPanel();
   if (k === 'wall.type') { clearTimeout(timer); compute(); renderPanel(); }
 });
 document.addEventListener('click', e => {
@@ -1908,6 +2083,11 @@ document.addEventListener('click', e => {
   const act = t.dataset.act;
   if (act === 'print') { window.print(); }
   if (act === 'copySlices') { const b = R.unrein.best[R.primary]; const csv = ['no,x,b,h,alpha_deg,W_kN,u_kPa,c,phi,soil'].concat(b.slices.map((s,i)=>[i+1,s.xm.toFixed(3),s.b.toFixed(3),s.h.toFixed(3),(s.alpha*180/Math.PI).toFixed(2),s.W.toFixed(2),s.u.toFixed(2),s.c,s.phi,'"'+s.soil+'"'].join(','))).join('\n'); copy(csv, 'Jadual hirisan disalin.'); }
+  if (act === 'autoLimits') {
+    const L = E.limitsOf(E.buildModel(P), { limAuto: true });
+    Object.assign(P.search, { ex1: +L.ex1.toFixed(1), ex2: +L.ex2.toFixed(1), en1: +L.en1.toFixed(1), en2: +L.en2.toFixed(1) });
+    renderPanel(); schedule(); toast('Julat masuk/keluar diisi daripada geometri cerun.');
+  }
   if (act === 'infFromGeom') {
     const b = P.geom.benches.reduce((a,c)=> (+c.n < +a.n ? c : a), P.geom.benches[0]);
     const s0 = R.m.soils[0];
@@ -1924,7 +2104,7 @@ $('#btnCopy').onclick = () => copy(JSON.stringify(P, null, 2), 'Data projek disa
 $('#fileOpen').onchange = e => {
   const file = e.target.files[0]; if (!file) return;
   const rd = new FileReader();
-  rd.onload = () => { try { P = Object.assign(sample(), JSON.parse(rd.result)); renderPanel(); compute(); toast('Projek dibuka: ' + (P.info.name||file.name)); } catch(err){ toast('Fail tidak sah. Pilih fail .json yang disimpan oleh sistem ini.'); } };
+  rd.onload = () => { try { P = mergeDefaults(JSON.parse(rd.result)); renderPanel(); compute(); toast('Projek dibuka: ' + (P.info.name||file.name)); } catch(err){ toast('Fail tidak sah. Pilih fail .json yang disimpan oleh sistem ini.'); } };
   rd.readAsText(file); e.target.value = '';
 };
 if (standalone) {

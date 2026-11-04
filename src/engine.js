@@ -174,9 +174,79 @@
     return out;
   }
 
+  /* Morgenstern–Price (GLE) untuk permukaan bulatan.
+     Keseimbangan momen (sekitar pusat) dan daya mendatar dipenuhi serentak;
+     ricih antara hirisan X = λ·f(x)·E. fType: 'halfsine' atau 'constant' (= Spencer). */
+  function morgensternPrice(sl, xc, yc, R, kh, nf, fType, Fguess) {
+    const n = sl.length;
+    const xb = [sl[0].xm - sl[0].b / 2];
+    sl.forEach(s => xb.push(xb[xb.length - 1] + s.b));
+    const xL = xb[0], xR = xb[n];
+    const fb = xb.map(x => fType === 'constant' ? 1 : Math.sin(Math.PI * (x - xL) / (xR - xL)));
+    const Pq = sl.map(s => {
+      const ca = Math.cos(s.alpha), l = s.b / ca;
+      return { W: s.W, Ws: s.Ws, sa: Math.sin(s.alpha), ca, tp: Math.tan(s.phi * D2R), cl: s.c * l, ul: s.u * l,
+        dx: s.xm - xc, dyg: yc - s.yg, Tx: 0, Ty: 0, Mn: 0, xm: s.xm, b: s.b };
+    });
+    (nf || []).forEach(t => {
+      const q = Pq.find(q => Math.abs(q.xm - t.xi) <= q.b / 2 + 1e-9) || Pq[Pq.length - 1];
+      const Tx = t.T * Math.cos(t.theta), Ty = -t.T * Math.sin(t.theta);
+      q.Tx += Tx; q.Ty += Ty; q.Mn += (t.xi - xc) * Ty - (t.yi - yc) * Tx;
+    });
+    let Md = 0;
+    Pq.forEach(q => { Md += q.W * q.dx + kh * q.Ws * q.dyg - q.Mn; });
+    if (!(Md > 1e-6)) return null;
+    const Nof = (q, dX, F) => (q.W - q.Ty + dX - (q.cl - q.ul * q.tp) * q.sa / F) / Math.max(q.ca + q.sa * q.tp / F, 0.2);
+    const Sres = (q, N) => q.cl + Math.max(0, N - q.ul) * q.tp;
+    const solve = lam => {
+      let X = new Array(n + 1).fill(0), Fm = Fguess, Ff = Fguess, E = new Array(n + 1).fill(0);
+      for (let k = 0; k < 60; k++) {
+        const dX = i => X[i + 1] - X[i];
+        let F = Fm;
+        for (let it = 0; it < 40; it++) {
+          let num = 0; for (let i = 0; i < n; i++) num += Sres(Pq[i], Nof(Pq[i], dX(i), F));
+          const Fn = R * num / Md; if (Math.abs(Fn - F) < 1e-6) { F = Fn; break; } F = Fn;
+        }
+        const FmN = F; F = Ff;
+        for (let it = 0; it < 40; it++) {
+          let num = 0, den = 0;
+          for (let i = 0; i < n; i++) { const q = Pq[i], N = Nof(q, dX(i), F); num += Sres(q, N) * q.ca; den += N * q.sa + kh * q.Ws - q.Tx; }
+          if (!(den > 1e-9)) return null;
+          const Fn = num / den; if (Math.abs(Fn - F) < 1e-6) { F = Fn; break; } F = Fn;
+        }
+        const FfN = F;
+        if (!isFinite(FmN) || !isFinite(FfN) || FmN <= 0 || FfN <= 0) return null;
+        E[0] = 0;
+        for (let i = 0; i < n; i++) { const q = Pq[i], N = Nof(q, dX(i), FfN); E[i + 1] = E[i] - N * q.sa + Sres(q, N) / FfN * q.ca - kh * q.Ws + q.Tx; }
+        const Xn = E.map((e, i) => (i === 0 || i === n) ? 0 : lam * fb[i] * e);
+        const conv = Math.abs(FmN - Fm) < 1e-5 && Math.abs(FfN - Ff) < 1e-5 && k > 1;
+        X = X.map((x, i) => 0.5 * x + 0.5 * Xn[i]); Fm = FmN; Ff = FfN;
+        if (conv) break;
+      }
+      return { Fm, Ff, E, X };
+    };
+    let l0 = 0, r0 = solve(l0); if (!r0) return null;
+    let l1 = 0.3, r1 = solve(l1); if (!r1) return null;
+    let g0 = r0.Fm - r0.Ff, g1 = r1.Fm - r1.Ff;
+    for (let it = 0; it < 40; it++) {
+      if (Math.abs(g1) < 1e-4) break;
+      if (Math.abs(g1 - g0) < 1e-12) return null;
+      let l2 = l1 - g1 * (l1 - l0) / (g1 - g0);
+      l2 = Math.max(-4, Math.min(4, l2));
+      const r2 = solve(l2); if (!r2) return null;
+      l0 = l1; g0 = g1; l1 = l2; r1 = r2; g1 = r2.Fm - r2.Ff;
+    }
+    if (Math.abs(g1) > 1e-3 || Math.abs(l1) >= 4) return null;
+    return { F: (r1.Fm + r1.Ff) / 2, lambda: l1, E: r1.E, X: r1.X, fType };
+  }
+
   function analyseCircle(m, xc, yc, R, opt) {
     const arc = findArc(m, xc, yc, R);
     if (!arc) return null;
+    if (opt.limits) { // had kawasan masuk/keluar
+      const L = opt.limits, tol = 0.25;
+      if (arc.xL < L.ex1 - tol || arc.xL > L.ex2 + tol || arc.xR < L.en1 - tol || arc.xR > L.en2 + tol) return null;
+    }
     const { slices, maxDepth } = makeSlices(m, xc, yc, R, arc.xL, arc.xR, opt.nSlices || 30);
     if (maxDepth < (opt.minDepth || 0.3)) return null;
     if (slices.some(s => s.rock)) return null;
@@ -245,6 +315,13 @@
       res.FS.janbu = Fj;
       res.f0 = f0;
     } else res.FS.janbu = NaN;
+    // Morgenstern–Price: dikira jika diminta (opt.mp === true) atau jika Bishop menghampiri minimum semasa
+    res.FS.mp = NaN;
+    const wantMP = opt.mp === true || (typeof opt.mp === 'function' && opt.mp(res.FS.bishop));
+    if (wantMP) {
+      const mp = morgensternPrice(slices, xc, yc, R, kh, nf, opt.mpFn || 'halfsine', Math.max(res.FS.bishop, 0.3));
+      if (mp) { res.FS.mp = mp.F; res.mp = mp; }
+    }
     return res;
   }
 
@@ -264,17 +341,21 @@
     const nx = Math.max(3, +s.nx || 12), ny = Math.max(3, +s.ny || 12), nr = Math.max(3, +s.nr || 10);
     const P = m.prof, H = Math.max(P.H, 1);
     const yLow = P.yToe - (+s.depthBelow >= 0 ? +s.depthBelow : 0.5 * H);
-    const opt = { nSlices: +s.nSlices || 30, minDepth: +s.minDepth || 0.5, nails };
+    const limits = (s.mode === 'entryexit' || s.useLimits) ? limitsOf(m, s) : null;
+    const opt = { nSlices: +s.nSlices || 30, minDepth: +s.minDepth || 0.5, nails, limits, mpFn: s.mpFn || 'halfsine' };
     const best = {}, trials = [];
     let count = 0;
+    // M-P dikira untuk bulatan yang Bishopnya dalam 15% daripada minimum semasa (jimat masa, hasil sama)
+    opt.mp = fb => !best.bishop || fb <= best.bishop.FS.bishop * 1.05;
     const consider = r => {
       count++;
-      ['fellenius', 'bishop', 'janbu'].forEach(k => {
+      ['fellenius', 'bishop', 'janbu', 'mp'].forEach(k => {
         const v = r.FS[k];
         if (isFinite(v) && v > 0 && (!best[k] || v < best[k].FS[k])) best[k] = r;
       });
     };
     const centreMin = [];
+    if (s.mode === 'entryexit') return searchEntryExit(m, s, opt, limits, best, consider, trials, primary, () => count);
     const tryCentre = (xc, yc, nR, record) => {
       let cmin = Infinity;
       const yTopTan = P.yCrest - opt.minDepth * 0.5;
@@ -285,8 +366,9 @@
         const r = analyseCircle(m, xc, yc, R, opt);
         if (!r) continue;
         consider(r);
-        if (record) trials.push({ xc, yc, R, F: r.FS[primary] });
-        if (r.FS[primary] < cmin) cmin = r.FS[primary];
+        const fp = isFinite(r.FS[primary]) ? r.FS[primary] : r.FS.bishop;
+        if (record) trials.push({ xc, yc, R, F: fp });
+        if (fp < cmin) cmin = fp;
       }
       return cmin;
     };
@@ -298,15 +380,62 @@
     }
     // perhalusan di sekitar pusat terbaik
     let dx = (g.x2 - g.x1) / (nx - 1), dy = (g.y2 - g.y1) / (ny - 1);
-    for (let pass = 0; pass < 2 && best[primary]; pass++) {
-      const c = best[primary];
+    const refKey = best[primary] ? primary : 'bishop';
+    for (let pass = 0; pass < 2 && best[refKey]; pass++) {
+      const c = best[refKey];
       for (let i = -3; i <= 3; i++) for (let j = -3; j <= 3; j++) {
         tryCentre(c.xc + i * dx / 3, c.yc + j * dy / 3, nr * 2, false);
       }
       dx /= 3; dy /= 3;
     }
     trials.sort((a, b) => a.F - b.F);
-    return { best, grid: g, centreMin, top: trials.slice(0, 12), count };
+    return { best, grid: g, centreMin, top: trials.slice(0, 12), count, limits, mode: 'grid' };
+  }
+
+  /* Had masuk (entry, di belakang puncak) dan keluar (exit, sekitar kaki) */
+  function limitsOf(m, s) {
+    const P = m.prof, H = Math.max(P.H, 1), W = Math.max(P.xCrest - P.xToe, 1);
+    const cl = v => Math.max(P.xMin, Math.min(P.xMax, v));
+    const auto = !!s.limAuto;
+    const raw = auto ? [P.xToe - 0.25 * H, P.xToe + 0.3 * W, P.xCrest - 0.15 * W, P.xCrest + 0.8 * H]
+                     : [+s.ex1, +s.ex2, +s.en1, +s.en2];
+    const L = { ex1: cl(Math.min(raw[0], raw[1])), ex2: cl(Math.max(raw[0], raw[1])),
+                en1: cl(Math.min(raw[2], raw[3])), en2: cl(Math.max(raw[2], raw[3])) };
+    return L;
+  }
+  // Carian masuk–keluar: bulatan melalui titik keluar dan titik masuk, dengan jejari berbeza
+  function searchEntryExit(m, s, opt, L, best, consider, trials, primary, getCount) {
+    const nEx = Math.max(2, +s.nEx || 10), nEn = Math.max(2, +s.nEn || 10), nRad = Math.max(2, +s.nRad || 8);
+    const tryPair = (xe, xn, nr, record) => {
+      if (xn - xe < 1) return;
+      const ye = ySurf(m, xe), yn = ySurf(m, xn);
+      const vx = xn - xe, vy = yn - ye, c = Math.hypot(vx, vy) / 2;
+      const ux = -vy / (2 * c), uy = vx / (2 * c); // normal ke atas
+      const Mx = (xe + xn) / 2, My = (ye + yn) / 2;
+      for (let k = 1; k <= nr; k++) {
+        const d = c * (0.06 + 0.94 * k / nr); // anak panah (sagitta) lengkok
+        const R = (c * c + d * d) / (2 * d);
+        const xc = Mx + ux * (R - d), yc = My + uy * (R - d);
+        const r = analyseCircle(m, xc, yc, R, opt);
+        if (!r) continue;
+        consider(r);
+        if (record) trials.push({ xc, yc, R, F: isFinite(r.FS[primary]) ? r.FS[primary] : r.FS.bishop, xe, xn });
+      }
+    };
+    const pts = (a, b, n) => Array.from({ length: n }, (_, i) => a + (b - a) * i / (n - 1));
+    pts(L.ex1, L.ex2, nEx).forEach(xe => pts(L.en1, L.en2, nEn).forEach(xn => tryPair(xe, xn, nRad, true)));
+    let de = (L.ex2 - L.ex1) / (nEx - 1), dn = (L.en2 - L.en1) / (nEn - 1);
+    const refKey = best[primary] ? primary : 'bishop';
+    for (let pass = 0; pass < 2 && best[refKey]; pass++) {
+      const c = best[refKey];
+      for (let i = -2; i <= 2; i++) for (let j = -2; j <= 2; j++) {
+        const xe = Math.max(L.ex1, Math.min(L.ex2, c.xL + i * de / 2)), xn = Math.max(L.en1, Math.min(L.en2, c.xR + j * dn / 2));
+        tryPair(xe, xn, nRad * 2, false);
+      }
+      de /= 2; dn /= 2;
+    }
+    trials.sort((a, b) => a.F - b.F);
+    return { best, grid: null, centreMin: [], top: trials.slice(0, 12), count: getCount(), limits: L, mode: 'entryexit' };
   }
 
   /* ---------------- Paku tanah ---------------- */
@@ -430,7 +559,7 @@
   }
 
   const API = { buildProfile, buildModel, interp, ySurf, yWater, soilAt, analyseCircle, search,
-    nailLayout, nailForces, infiniteAnalysis, infiniteFS, earthworks, geometryChecks, requiredFS, runAll, findArc };
+    nailLayout, nailForces, morgensternPrice, limitsOf, infiniteAnalysis, infiniteFS, earthworks, geometryChecks, requiredFS, runAll, findArc };
   if (typeof module !== 'undefined' && module.exports) module.exports = API;
   else root.SlopeEngine = API;
 })(this);
